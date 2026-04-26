@@ -22,6 +22,7 @@
     msgBody: '.markdown.prose',
     // Fallback streaming indicator (blinking cursor) often used by ChatGPT
     streamingCursor: '.result-streaming',
+    copyBtn: '[data-testid="copy-turn-action-button"]',
   };
 
   /**
@@ -119,15 +120,30 @@
       }
 
       // Determine if still streaming
-      const stopExists = !!document.querySelector(SEL.stopBtn);
+      const stopExists = !!document.querySelector(SEL.stopBtn) ||
+        !!document.querySelector('button[aria-label*="Stop"]') ||
+        !!document.querySelector('button[aria-label*="stoppen"]');
       const cursorExists = !!document.querySelector(SEL.streamingCursor);
       const isStreaming = stopExists || cursorExists;
 
+      // Check if the copy button has appeared in the DOM. It usually appears only when generation is finished.
+      const allMsgs = document.querySelectorAll(SEL.assistantMsg);
+      const lastMsg = allMsgs.length > 0 ? allMsgs[allMsgs.length - 1] : null;
+      const copyBtnExists = lastMsg ? !!lastMsg.querySelector(SEL.copyBtn) : false;
+
       const stableFor = Date.now() - lastChange;
 
-      // Primary exit: Stop button gone, cursor gone, and text stable for a short buffer.
-      // The 2500ms buffer prevents exiting in the tiny gap before streaming begins.
-      if (text.length >= 10 && !isStreaming && stableFor >= 2500) {
+      // Primary exit 1: Copy button is present and text is stable for a short buffer.
+      // This is the most reliable indicator that generation has finished.
+      if (text.length >= 10 && copyBtnExists && stableFor >= 1000) {
+        const ms = Date.now() - tStart;
+        B.log(`chatgpt: done (copy btn present) after ${ms}ms, ${text.length} chars`);
+        return { answer: text, durationMs: ms };
+      }
+
+      // Primary exit 2: Stop button gone, cursor gone, and text stable for a longer buffer.
+      // The 4500ms buffer prevents exiting during long pauses (e.g., when doing web searches).
+      if (text.length >= 10 && !isStreaming && stableFor >= 4500) {
         const ms = Date.now() - tStart;
         B.log(`chatgpt: done+stable after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
