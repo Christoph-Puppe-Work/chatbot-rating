@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chatbot Product Benchmark</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg-deep:        oklch(0.13 0.02 280);
+  --bg-elev-1:      oklch(0.95 0.005 280 / 0.04);
+  --bg-elev-2:      oklch(0.95 0.005 280 / 0.06);
+  --bg-elev-3:      oklch(0.95 0.005 280 / 0.08);
+  --border-1:       oklch(0.95 0.005 280 / 0.06);
+  --border-2:       oklch(0.95 0.005 280 / 0.10);
+  --text-primary:   oklch(0.95 0.005 280);
+  --text-secondary: oklch(0.78 0.02 280);
+  --text-tertiary:  oklch(0.65 0.02 280);
+  --text-quiet:     oklch(0.55 0.02 280);
+  --accent:         oklch(0.7  0.18 300);
+  --accent-soft:    oklch(0.7  0.18 300 / 0.15);
+  --accent-glow:    oklch(0.7  0.18 300 / 0.4);
+  --green:          oklch(0.74 0.16 145);
+  --red:            oklch(0.65 0.20 25);
+  --blue:           oklch(0.70 0.16 240);
+  --sans:           'Inter', system-ui, sans-serif;
+  --mono:           'JetBrains Mono', ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  min-height: 100vh;
+}
+body { position: relative; overflow-x: hidden; padding: 56px 32px 80px; }
+::selection { background: oklch(0.7 0.18 300 / 0.35); color: var(--text-primary); }
+
+/* aurora */
+.aurora-1, .aurora-2, .noise { position: fixed; pointer-events: none; z-index: 0; }
+.aurora-1 {
+  width: 600px; height: 600px; top: -200px; left: -100px; border-radius: 50%;
+  background: radial-gradient(circle, oklch(0.4 0.18 300 / 0.5), transparent 70%);
+  filter: blur(60px);
+}
+.aurora-2 {
+  width: 700px; height: 700px; bottom: -300px; right: -200px; border-radius: 50%;
+  background: radial-gradient(circle, oklch(0.4 0.16 240 / 0.4), transparent 70%);
+  filter: blur(80px);
+}
+.noise {
+  inset: 0; opacity: 0.03;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22><filter id=%22n%22><feTurbulence baseFrequency=%220.9%22/></filter><rect width=%22100%22 height=%22100%22 filter=%22url(%23n)%22/></svg>");
+}
+.wrap { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; }
+
+/* hero */
+.hero { padding: 40px 0 50px; border-bottom: 1px solid var(--border-1); margin-bottom: 32px; }
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.25em;
+  color: var(--accent);
+  margin-bottom: 24px;
+}
+.eyebrow::before { content: "◐ "; opacity: 0.7; }
+h1 {
+  font-size: 56px;
+  line-height: 1.0;
+  font-weight: 700;
+  letter-spacing: -1.5px;
+  margin-bottom: 20px;
+}
+h1 em { font-style: normal; color: var(--accent); }
+.lede {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  max-width: 680px;
+}
+.lede em { color: var(--text-primary); font-style: normal; font-weight: 500; }
+
+/* sections */
+.section {
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-1);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  padding: 28px 32px;
+  margin-bottom: 20px;
+  border-radius: 12px;
+}
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-1);
+}
+.sec-num {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--accent);
+}
+.sec-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  color: var(--text-primary);
+}
+.sec-aside {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-quiet);
+}
+
+/* form fields */
+.row { display: grid; gap: 20px; }
+.row.two { grid-template-columns: 1fr 1fr; }
+.row.four { grid-template-columns: repeat(4, 1fr); }
+.field label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-quiet);
+  margin-bottom: 8px;
+}
+.field input, .field select {
+  width: 100%;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-2);
+  color: var(--text-primary);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  outline: none;
+  backdrop-filter: blur(10px);
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.field input:focus, .field select:focus {
+  border-color: oklch(0.7 0.18 300 / 0.6);
+  box-shadow: 0 0 0 3px oklch(0.7 0.18 300 / 0.15);
+}
+.field .hint { font-size: 11px; color: var(--text-tertiary); margin-top: 6px; line-height: 1.5; }
+
+/* buttons */
+.btn {
+  background: var(--accent);
+  color: var(--bg-deep);
+  border: none;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  padding: 14px 28px;
+  cursor: pointer;
+  border-radius: 10px;
+  transition: filter 0.15s, transform 0.15s;
+  box-shadow: 0 6px 20px var(--accent-glow);
+}
+.btn:hover { filter: brightness(1.08); }
+.btn:active { transform: scale(0.98); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; box-shadow: none; }
+.btn.ghost {
+  background: var(--bg-elev-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border-2);
+  box-shadow: none;
+}
+.btn.ghost:hover { background: var(--bg-elev-3); border-color: var(--accent); color: var(--accent); }
+.btn.danger { background: var(--red); color: var(--bg-deep); box-shadow: 0 6px 20px oklch(0.65 0.20 25 / 0.3); }
+.actions { display: flex; gap: 12px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+
+/* progress phases */
+.phases { display: grid; gap: 14px; margin-top: 16px; }
+.phase-row { display: grid; grid-template-columns: 130px 1fr 90px; gap: 14px; align-items: center; font-size: 11px; }
+.phase-name {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-quiet);
+}
+.phase-name.active { color: var(--accent); }
+.phase-name.done { color: var(--green); }
+.progress-track {
+  height: 4px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.progress-fill { height: 100%; background: var(--accent); width: 0%; transition: width 0.25s ease; }
+.progress-fill.done { background: var(--green); }
+.phase-count {
+  font-family: var(--mono);
+  text-align: right;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* status pill */
+.status-pill {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  padding: 4px 12px;
+  border: 1px solid var(--border-2);
+  border-radius: 100px;
+  color: var(--text-quiet);
+  background: var(--bg-elev-1);
+}
+.status-pill.running { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.status-pill.done    { color: var(--green); border-color: var(--green); background: oklch(0.74 0.16 145 / 0.12); }
+.status-pill.error   { color: var(--red);  border-color: var(--red); background: oklch(0.65 0.20 25 / 0.12); }
+
+/* results table */
+.results-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th, td {
+  padding: 12px 14px;
+  text-align: left;
+  border-bottom: 1px solid var(--border-1);
+  vertical-align: top;
+}
+th {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-quiet);
+  font-weight: 500;
+}
+td.q { font-size: 13px; line-height: 1.5; max-width: 360px; color: var(--text-primary); }
+td.score { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: center; font-size: 12px; }
+td.score .gem { color: var(--text-primary); }
+td.score .cla { color: var(--text-tertiary); }
+td.score .ms { display: block; color: var(--text-quiet); font-size: 10px; margin-top: 4px; }
+td.empty { color: var(--red); font-style: italic; }
+.summary-row td { font-weight: 600; border-top: 1px solid var(--accent); background: var(--accent-soft); }
+
+/* user rating badge */
+td.score .user-badge {
+  display: inline-block;
+  font-size: 9px;
+  padding: 1px 5px;
+  margin-left: 4px;
+  background: var(--accent);
+  color: var(--bg-deep);
+  border-radius: 3px;
+  letter-spacing: 0.05em;
+  vertical-align: 1px;
+}
+
+/* log console */
+.log-card { padding: 0; }
+.log-head {
+  display: flex; align-items: center; gap: 16px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--border-1);
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--text-quiet);
+}
+.log-head .grow { flex: 1; }
+.log-head .count { color: var(--text-secondary); }
+.log-head label { display: flex; gap: 6px; align-items: center; cursor: pointer; color: var(--text-quiet); }
+.log-head button {
+  background: transparent;
+  border: 1px solid var(--border-2);
+  color: var(--text-quiet);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  padding: 5px 12px;
+  cursor: pointer;
+  text-transform: uppercase;
+  border-radius: 6px;
+}
+.log-head button:hover { color: var(--accent); border-color: var(--accent); }
+.log-body {
+  height: 280px;
+  overflow-y: auto;
+  padding: 14px 24px;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.log-line { display: grid; grid-template-columns: 90px 50px 1fr; gap: 12px; padding: 1px 0; }
+.log-line .ts { color: var(--text-quiet); }
+.log-line .lvl { text-transform: uppercase; font-size: 10px; padding-top: 1px; }
+.log-line.info  .lvl { color: var(--blue); }
+.log-line.ok    .lvl { color: var(--green); }
+.log-line.warn  .lvl { color: oklch(0.78 0.16 70); }
+.log-line.err   .lvl { color: var(--red); }
+.log-line.debug .lvl { color: var(--text-quiet); }
+.log-line.debug .msg { color: var(--text-tertiary); }
+.log-line .msg { word-break: break-word; color: var(--text-primary); }
+
+/* answer modal */
+.modal-bg {
+  position: fixed; inset: 0;
+  background: oklch(0.13 0.02 280 / 0.7);
+  backdrop-filter: blur(8px);
+  display: none; align-items: center; justify-content: center; z-index: 100;
+}
+.modal-bg.open { display: flex; }
+.modal {
+  max-width: 720px; max-height: 82vh; width: calc(100% - 40px);
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-1);
+  backdrop-filter: blur(24px);
+  padding: 32px 36px; overflow-y: auto;
+  border-radius: 12px;
+}
+.modal h3 {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  margin-bottom: 8px;
+}
+.modal .modal-meta {
+  font-family: var(--mono);
+  color: var(--text-tertiary);
+  font-size: 11px;
+  margin-bottom: 20px;
+  letter-spacing: 0.5px;
+}
+.modal .modal-q {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+  margin-bottom: 20px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--border-1);
+}
+.modal pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--text-primary);
+  background: var(--bg-elev-1);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border-1);
+}
+.modal .modal-judges {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border-1);
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+.modal .modal-judges b { color: var(--text-primary); font-weight: 600; }
+.modal .modal-close {
+  margin-top: 20px;
+  background: var(--accent);
+  color: var(--bg-deep);
+  border: none;
+  padding: 10px 20px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  font-weight: 700;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px var(--accent-glow);
+}
+
+/* user rating block */
+.user-rating { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--accent); }
+.user-rating-head { display: flex; align-items: center; gap: 14px; margin-bottom: 6px; }
+.user-rating-head .eyebrow { color: var(--accent); margin: 0; }
+.user-rating-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.15em;
+  color: var(--text-quiet);
+  margin-left: auto;
+}
+.user-rating-status.saved { color: var(--green); }
+.user-rating-hint { font-size: 12px; color: var(--text-tertiary); margin: 0 0 18px 0; line-height: 1.55; }
+.slider-row {
+  display: grid;
+  grid-template-columns: 110px 1fr 30px;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+.slider-row label {
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-quiet);
+}
+.slider-row input[type=range] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 4px;
+  background: var(--bg-elev-2);
+  border-radius: 2px;
+  outline: none;
+}
+.slider-row input[type=range]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  box-shadow: 0 0 0 3px oklch(0.7 0.18 300 / 0.2);
+}
+.slider-row input[type=range]::-moz-range-thumb {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: var(--accent);
+  cursor: pointer;
+  border: none;
+  box-shadow: 0 0 0 3px oklch(0.7 0.18 300 / 0.2);
+}
+.slider-val { font-family: var(--mono); font-variant-numeric: tabular-nums; font-size: 14px; color: var(--text-primary); text-align: right; }
+.user-rating-notes-label {
+  display: block;
+  font-family: var(--mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-quiet);
+  margin: 14px 0 6px;
+}
+.user-rating textarea {
+  width: 100%;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-2);
+  color: var(--text-primary);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 10px 12px;
+  border-radius: 8px;
+  resize: vertical;
+  min-height: 60px;
+  backdrop-filter: blur(10px);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.user-rating textarea:focus {
+  border-color: oklch(0.7 0.18 300 / 0.6);
+  box-shadow: 0 0 0 3px oklch(0.7 0.18 300 / 0.15);
+}
+.user-rating textarea::-webkit-resizer {
+  background: linear-gradient(135deg, transparent 50%, oklch(0.7 0.18 300 / 0.5) 50%);
+}
+.user-rating-actions { display: flex; gap: 10px; margin-top: 14px; justify-content: flex-end; }
+.user-rating-actions .btn { padding: 9px 18px; font-size: 11px; }
+
+.hidden { display: none !important; }
+
+</style>
+</head>
+<body>
+<div class="aurora-1"></div>
+<div class="aurora-2"></div>
+<div class="noise"></div>
+<div class="wrap">
+
+<header class="hero">
+  <div class="eyebrow">consumer chatbot product benchmark · v0.6</div>
+  <h1>Test the <em>products</em>,<br>not the models.</h1>
+  <p class="lede">
+    Open all four chatbots in real tabs, ask them <em>real</em> questions sourced
+    from today's news, judge the answers with two independent LLMs.
+  </p>
+</header>
+
+<!-- 01 · keys -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">01</span>
+    <span class="sec-title">reasoning engines</span>
+    <span class="sec-aside">judges run via API · keys stored locally only</span>
+  </div>
+  <div class="row two">
+    <div class="field">
+      <label>Gemini API key (question gen + judge 1)</label>
+      <input id="gemini-key" type="password" placeholder="AIza…">
+      <div class="hint">aistudio.google.com/apikey · gemini-3.1-pro-preview is used</div>
+    </div>
+    <div class="field">
+      <label>Anthropic API key (judge 2)</label>
+      <input id="claude-key" type="password" placeholder="sk-ant-…">
+      <div class="hint">console.anthropic.com · claude-opus-4-7 is used</div>
+    </div>
+  </div>
+</section>
+
+<!-- 02 · source -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">02</span>
+    <span class="sec-title">news source</span>
+  </div>
+  <div class="row four">
+    <div class="field">
+      <label>Source</label>
+      <select id="source">
+        <option value="hackernews">Hacker News (front page)</option>
+      </select>
+      <div class="hint">More sources can be added in background.js → fetchNews()</div>
+    </div>
+    <div class="field">
+      <label>Question count</label>
+      <input id="count" type="number" min="1" max="20" value="10">
+    </div>
+    <div class="field">
+      <label>Max wait per answer (s)</label>
+      <input id="max-wait" type="number" min="30" max="600" value="180">
+      <div class="hint">Hard timeout if a chatbot stalls</div>
+    </div>
+    <div class="field">
+      <label>Max concurrent tabs</label>
+      <input id="concurrency" type="number" min="1" max="40" value="8">
+      <div class="hint">Cap on parallel tabs · low = safer · high = faster</div>
+    </div>
+  </div>
+  <div class="row" style="margin-top: 16px;">
+    <div class="field" style="display: flex; align-items: center; gap: 12px;">
+      <span id="status-pill" class="status-pill">idle</span>
+      <span class="hint" style="margin: 0;">total tasks = count × 4 chatbots · peak open tabs = concurrency cap</span>
+    </div>
+  </div>
+</section>
+
+<!-- 03 · run -->
+<section class="section">
+  <div class="sec-head">
+    <span class="sec-num">03</span>
+    <span class="sec-title">run</span>
+    <span class="sec-aside">make sure you're logged into all 4 chatbots in this browser profile</span>
+  </div>
+  <div class="actions">
+    <button id="btn-start" class="btn">▶ start benchmark</button>
+    <button id="btn-stop" class="btn ghost hidden">■ stop</button>
+    <button id="btn-export" class="btn ghost hidden">⇣ export csv</button>
+    <button id="btn-infographic" class="btn ghost hidden">⇣ export infographic</button>
+  </div>
+
+  <div id="phases" class="phases hidden">
+    <div class="phase-row" data-phase="news">
+      <span class="phase-name">news fetch</span>
+      <div class="progress-track"><div class="progress-fill"></div></div>
+      <span class="phase-count">0 / 0</span>
+    </div>
+    <div class="phase-row" data-phase="questions">
+      <span class="phase-name">question gen</span>
+      <div class="progress-track"><div class="progress-fill"></div></div>
+      <span class="phase-count">0 / 0</span>
+    </div>
+    <div class="phase-row" data-phase="asking">
+      <span class="phase-name">tasks (Q × bot)</span>
+      <div class="progress-track"><div class="progress-fill"></div></div>
+      <span class="phase-count">0 / 0</span>
+    </div>
+  </div>
+</section>
+
+<!-- 04 · results -->
+<section class="section" id="results-sec" style="display:none">
+  <div class="sec-head">
+    <span class="sec-num">04</span>
+    <span class="sec-title">results</span>
+    <span class="sec-aside">click any cell to view the full answer + judge reasoning</span>
+  </div>
+  <div class="results-wrap">
+    <table id="results-table">
+      <thead>
+        <tr>
+          <th style="width:30px">#</th>
+          <th>question</th>
+          <th>claude</th>
+          <th>chatgpt</th>
+          <th>gemini</th>
+          <th>grok</th>
+        </tr>
+      </thead>
+      <tbody id="results-body"></tbody>
+    </table>
+  </div>
+</section>
+
+<!-- log -->
+<section class="section log-card">
+  <div class="log-head">
+    <span>console</span>
+    <span class="count" id="log-count">0 lines</span>
+    <span class="grow"></span>
+    <label style="display:flex;gap:6px;align-items:center;cursor:pointer;color:var(--dim)">
+      <input type="checkbox" id="autoscroll" checked> autoscroll
+    </label>
+    <button id="log-clear">clear</button>
+  </div>
+  <div class="log-body" id="log-body"></div>
+</section>
+
+</div><!-- /wrap -->
+
+<!-- answer modal -->
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <div class="eyebrow" id="modal-eyebrow">// answer</div>
+    <h3 id="modal-title">—</h3>
+    <div class="modal-meta" id="modal-meta">—</div>
+    <div class="modal-q" id="modal-q">—</div>
+    <pre id="modal-pre">—</pre>
+    <div class="modal-judges" id="modal-judges">—</div>
+
+    <div class="user-rating" id="user-rating">
+      <div class="user-rating-head">
+        <span class="eyebrow">// your rating</span>
+        <span class="user-rating-status" id="user-rating-status"></span>
+      </div>
+      <p class="user-rating-hint">Your scores override both judges in the table and CSV export. Judge scores stay visible above for reference.</p>
+
+      <div class="slider-row">
+        <label for="ur-completeness">completeness</label>
+        <input type="range" id="ur-completeness" min="0" max="10" step="1" value="5">
+        <span class="slider-val" id="ur-completeness-val">5</span>
+      </div>
+      <div class="slider-row">
+        <label for="ur-precision">precision</label>
+        <input type="range" id="ur-precision" min="0" max="10" step="1" value="5">
+        <span class="slider-val" id="ur-precision-val">5</span>
+      </div>
+
+      <label class="user-rating-notes-label" for="ur-notes">notes (optional)</label>
+      <textarea id="ur-notes" rows="2" placeholder="why this score…"></textarea>
+
+      <div class="user-rating-actions">
+        <button class="btn ghost" id="ur-clear" type="button">clear my rating</button>
+        <button class="btn" id="ur-save" type="button">save my rating</button>
+      </div>
+    </div>
+
+    <button class="modal-close" id="modal-close">close</button>
+  </div>
+</div>
+
+
+<script src="dashboard.js"></script>
+</body>
+</html>
