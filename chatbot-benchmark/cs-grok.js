@@ -117,10 +117,19 @@
       const hasLastResponse = checkIsDoneLocally();
       const stableFor = Date.now() - lastChange;
 
-      // We reduced the character limit to 10 to catch short "Test successful" answers
-      if (text.length >= 10 && (hasLastResponse || stableFor >= 4000)) {
+      // Primary exit: Grok has the .last-response action buttons, and text is stable
+      // The 2500ms buffer prevents exiting in the tiny gap before streaming begins.
+      if (text.length >= 10 && hasLastResponse && stableFor >= 2500) {
         const ms = Date.now() - tStart;
-        B.log(`grok: ${hasLastResponse ? "last-response" : "stable"} after ${ms}ms, ${text.length} chars`);
+        B.log(`grok: last-response after ${ms}ms, ${text.length} chars`);
+        return { answer: text, durationMs: ms };
+      }
+
+      // Safety fallback: If it's still streaming but text hasn't changed in 60s
+      // Background tabs freeze text updates, so this MUST be longer than a full response generation.
+      if (text.length >= 10 && !hasLastResponse && stableFor >= 60000) {
+        const ms = Date.now() - tStart;
+        B.log(`grok: stable-fallback after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
     }

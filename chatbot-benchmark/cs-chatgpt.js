@@ -18,7 +18,7 @@
       '#composer-submit-button',
     ],
     stopBtn: 'button[data-testid="stop-button"]',
-    assistantMsg: 'div[data-message-author-role="assistant"]',
+    assistantMsg: '[data-turn="assistant"], div[data-message-author-role="assistant"]',
     msgBody: '.markdown.prose',
     // Fallback streaming indicator (blinking cursor) often used by ChatGPT
     streamingCursor: '.result-streaming',
@@ -31,7 +31,7 @@
   function extractText(el) {
     if (!el) return "";
 
-    const blockTags = ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'PRE', 'BLOCKQUOTE'];
+    const blockTags = ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'PRE', 'BLOCKQUOTE', 'TD', 'TH'];
     const blocks = el.querySelectorAll(blockTags.join(', '));
 
     if (blocks.length > 0) {
@@ -62,9 +62,12 @@
     if (!allMsgs.length) return "";
 
     for (let i = allMsgs.length - 1; i >= 0; i--) {
-      const body = allMsgs[i].querySelector(SEL.msgBody);
-      if (body) {
-        const text = extractText(body);
+      const bodies = allMsgs[i].querySelectorAll(SEL.msgBody);
+      if (bodies.length > 0) {
+        const text = Array.from(bodies)
+          .map(body => extractText(body))
+          .filter(t => t.length > 0)
+          .join("\n\n---\n\n");
         if (text.length > 0) return text;
       }
     }
@@ -122,15 +125,17 @@
 
       const stableFor = Date.now() - lastChange;
 
-      // Primary exit: Stop button gone, cursor gone, and text stable for a short buffer
-      if (text.length >= 10 && !isStreaming && stableFor >= 1500) {
+      // Primary exit: Stop button gone, cursor gone, and text stable for a short buffer.
+      // The 2500ms buffer prevents exiting in the tiny gap before streaming begins.
+      if (text.length >= 10 && !isStreaming && stableFor >= 2500) {
         const ms = Date.now() - tStart;
         B.log(`chatgpt: done+stable after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
 
-      // Safety fallback: text is completely stable for 8 seconds, regardless of UI indicators
-      if (text.length >= 10 && stableFor >= 8000) {
+      // Safety fallback: UI indicates it IS streaming, but text hasn't changed in 60s.
+      // Background tabs freeze text updates, so this MUST be longer than a full response generation.
+      if (text.length >= 10 && isStreaming && stableFor >= 60000) {
         const ms = Date.now() - tStart;
         B.log(`chatgpt: stable-fallback after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };

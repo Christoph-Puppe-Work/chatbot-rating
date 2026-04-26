@@ -1,9 +1,7 @@
 // cs-claude.js — adapter for claude.ai
 //
 // Fresh-tab strategy: this script runs in a tab that was just opened for
-// EXACTLY ONE question. The DOM starts empty (no prior conversation), so
-// we don't need ID diffing, consumed-marking, or stream concurrency
-// handling. We just wait for THE answer to appear.
+// EXACTLY ONE question. The DOM starts empty (no prior conversation).
 
 (function () {
   const B = window.__BENCH__;
@@ -25,56 +23,75 @@
     ],
     streamingWrapper: 'div[data-is-streaming]',
     markdown: '.standard-markdown, .progressive-markdown',
-    responseBody: '.font-claude-response-body',
+    // Der von dir identifizierte, isolierte Container (escaped für querySelector)
+    targetContainer: '.row-start-2 .row-start-1.relative.z-\\[2\\]'
   };
 
   /**
-   * Safely extract text in background tabs.
-   * Includes logic to prevent duplicating text from nested block elements.
+   * Rekursiver DOM-Walker für Hintergrund-Tabs.
+   * Extrahiert Text nativ und verarbeitet Tabellen/Listen, ohne Inhalte zu droppen.
    */
-  function extractText(el) {
-    if (!el) return "";
+  function extractTextNode(node) {
+    if (!node) return "";
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
+    if (node.nodeType !== Node.ELEMENT_NODE) return "";
 
-    const blockTags = ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'PRE', 'BLOCKQUOTE'];
-    const blocks = el.querySelectorAll(blockTags.join(', '));
+    const tag = node.tagName.toUpperCase();
 
-    if (blocks.length > 0) {
-      // Filter out blocks that are nested inside other matched blocks
-      // to avoid extracting the same text twice.
-      const topLevelBlocks = Array.from(blocks).filter(node => {
-        let parent = node.parentElement;
-        while (parent && parent !== el) {
-          if (blockTags.includes(parent.tagName)) return false;
-          parent = parent.parentElement;
-        }
-        return true;
-      });
-
-      return topLevelBlocks
-        .map(b => (b.textContent || "").trim())
-        .filter(Boolean)
-        .join("\n\n");
+    // Ignoriere störende UI-Elemente wie "Copy", "Retry" Buttons oder Icons
+    if (tag === 'BUTTON' || tag === 'SVG' || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') {
+      return "";
     }
 
-    return (el.innerText || el.textContent || "").trim();
+    const isBlock = ['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'PRE', 'BLOCKQUOTE', 'TR', 'UL', 'OL', 'TABLE', 'FIGURE'].includes(tag);
+
+    let text = "";
+    for (let i = 0; i < node.childNodes.length; i++) {
+      text += extractTextNode(node.childNodes[i]);
+    }
+
+    // Tabulator zwischen Tabellenzellen für bessere Lesbarkeit
+    if (tag === 'TD' || tag === 'TH') {
+      text += " \t ";
+    }
+
+    // Neue Zeilen um Block-Elemente legen
+    if (isBlock) {
+      text = "\n\n" + text + "\n\n";
+    }
+
+    return text;
   }
 
-  /**
-   * Re-query the DOM every iteration to avoid stale React references.
-   * Returns { text, streamingDone }.
-   */
+  /** Wrapper zur Bereinigung überschüssiger Leerzeichen und Zeilenumbrüche */
+  function extractText(el) {
+    if (!el) return "";
+    let raw = extractTextNode(el);
+    return raw
+      .replace(/[ \t]+/g, ' ')         // Horizontale Leerzeichen kollabieren
+      .replace(/\n[ \t]+/g, '\n')      // Führende Leerzeichen pro Zeile entfernen
+      .replace(/[ \t]+\n/g, '\n')      // Nachgestellte Leerzeichen pro Zeile entfernen
+      .replace(/\n{3,}/g, '\n\n')      // 3+ Zeilenumbrüche auf 2 reduzieren
+      .trim();
+  }
+
   function queryResponse() {
-    // 1. Check global streaming state
     let streamingDone = true;
-    const streamingWrappers = document.querySelectorAll(SEL.streamingWrapper);
-    if (streamingWrappers.length > 0) {
-      // If any wrapper explicitly says it is streaming, we are not done
-      const isStreaming = Array.from(streamingWrappers).some(w => w.getAttribute("data-is-streaming") === "true");
+    const wrappers = document.querySelectorAll(SEL.streamingWrapper);
+    if (wrappers.length > 0) {
+      const isStreaming = Array.from(wrappers).some(w => w.getAttribute("data-is-streaming") === "true");
       streamingDone = !isStreaming;
     }
 
-    // 2. Because this is a fresh tab, the actual response is simply the 
-    // globally last markdown container. This avoids relative DOM traversal bugs.
+    // 1. Primär: Nutze den spezifischen Container aus Zeile 2 (ignoriert "Thinking"-Blöcke)
+    const targets = document.querySelectorAll(SEL.targetContainer);
+    if (targets.length > 0) {
+      // Wenn es mehrere gibt (unwahrscheinlich im Fresh-Tab), nimm den letzten
+      const text = extractText(targets[targets.length - 1]);
+      if (text) return { text, streamingDone };
+    }
+
+    // 2. Fallback: Suche nach dem generischen Markdown-Container
     const mdAll = document.querySelectorAll(SEL.markdown);
     if (mdAll.length > 0) {
       const lastMd = mdAll[mdAll.length - 1];
@@ -82,20 +99,9 @@
       if (text) return { text, streamingDone };
     }
 
-    // 3. Fallback: collect all body paragraphs globally
-    const bodyEls = document.querySelectorAll(SEL.responseBody);
-    if (bodyEls.length > 0) {
-      const parts = Array.from(bodyEls)
-        .map(el => extractText(el))
-        .filter(Boolean);
-      if (parts.length) {
-        return { text: parts.join("\n\n"), streamingDone };
-      }
-    }
-
-    // 4. Ultimate fallback: use the wrapper's text directly
-    if (streamingWrappers.length > 0) {
-      const lastWrapper = streamingWrappers[streamingWrappers.length - 1];
+    // 3. Letzter Fallback: Der Streaming-Wrapper selbst
+    if (wrappers.length > 0) {
+      const lastWrapper = wrappers[wrappers.length - 1];
       return { text: extractText(lastWrapper), streamingDone };
     }
 
@@ -114,10 +120,12 @@
     B.log("claude: submitting…");
     const tStart = Date.now();
     let sendBtn = B.pickOne(SEL.sendBtn);
+
     while (sendBtn && (sendBtn.disabled || sendBtn.getAttribute("aria-disabled") === "true") && Date.now() - tStart < 5000) {
       await B.sleep(150);
       sendBtn = B.pickOne(SEL.sendBtn);
     }
+
     if (sendBtn) {
       B.realClick(sendBtn);
     } else {
@@ -152,13 +160,17 @@
 
       const stableFor = Date.now() - lastChange;
 
-      if (text.length >= 10 && streamingDone && stableFor >= 2000) {
+      // Primary exit: Stop button gone (streamingDone), and text stable for a short buffer.
+      // The 2500ms buffer prevents exiting in the tiny gap before streaming begins.
+      if (text.length >= 10 && streamingDone && stableFor >= 2500) {
         const ms = Date.now() - tStart;
         B.log(`claude: streaming-done+stable after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
 
-      if (text.length >= 10 && stableFor >= 8000) {
+      // Safety fallback: UI indicates it IS streaming, but text hasn't changed in 60s.
+      // Background tabs freeze text updates, so this MUST be longer than a full response generation.
+      if (text.length >= 10 && !streamingDone && stableFor >= 60000) {
         const ms = Date.now() - tStart;
         B.log(`claude: stable-fallback after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };

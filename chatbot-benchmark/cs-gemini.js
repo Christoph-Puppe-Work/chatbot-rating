@@ -106,15 +106,17 @@
 
       const stableFor = Date.now() - lastChange;
 
-      // Primary exit: Gemini explicitly tells us it is done via the DOM
-      if (text.length >= 10 && !isBusy) {
+      // Primary exit: Gemini explicitly tells us it is done via the DOM, and text is stable
+      // The 2500ms buffer prevents exiting in the tiny gap before streaming begins.
+      if (text.length >= 10 && !isBusy && stableFor >= 2500) {
         const ms = Date.now() - tStart;
         B.log(`gemini: aria-busy=false after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
 
-      // Safety fallback: If aria-busy gets stuck but text is stable for 8 seconds
-      if (text.length >= 10 && stableFor >= 8000) {
+      // Safety fallback: If aria-busy gets stuck but text hasn't changed in 60s
+      // Background tabs freeze text updates, so this MUST be longer than a full response generation.
+      if (text.length >= 10 && isBusy && stableFor >= 60000) {
         const ms = Date.now() - tStart;
         B.log(`gemini: stable-fallback after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };

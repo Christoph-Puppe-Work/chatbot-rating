@@ -9,6 +9,8 @@ const state = {
   port: null,
   userRatings: {},      // key -> { completeness, precision, notes, savedAt }
   modal: null,          // { question, chatbot, ans, key } while open
+  blindIndex: 0,        // current index for blind judge mode
+  blindMapping: [],     // shuffled array of chatbot names
 };
 
 // Stable key for a (question, chatbot) pair. Same question + chatbot = same key
@@ -1078,10 +1080,14 @@ function handleBgMessage(msg) {
       setStatus("done", "done");
       $("btn-export").classList.remove("hidden");
       $("btn-infographic").classList.remove("hidden");
+      $("btn-blind-judge").classList.remove("hidden");
       break;
     case "DONE":
       state.running = false;
       $("btn-start").disabled = false;
+      $("btn-export").classList.remove("hidden");
+      $("btn-infographic").classList.remove("hidden");
+      $("btn-blind-judge").classList.remove("hidden");
       break;
     case "ERROR":
       log("err", msg.payload.message);
@@ -1089,3 +1095,120 @@ function handleBgMessage(msg) {
       break;
   }
 }
+
+// ===== blind judge mode =====
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function openBlindModal(index) {
+  const validResults = state.results.filter(Boolean);
+  if (validResults.length === 0) return;
+  if (index < 0) index = 0;
+  if (index >= validResults.length) index = validResults.length - 1;
+  
+  state.blindIndex = index;
+  const r = validResults[index];
+  
+  // Create a new mapping for this question, or use an existing one if we want consistency
+  // Here we re-shuffle every time we open a question to prevent guessing
+  state.blindMapping = shuffleArray(CHATBOTS);
+  
+  $("blind-q-text").textContent = `[${index + 1}/${validResults.length}] ` + r.question;
+  $("blind-status-msg").textContent = "";
+  
+  const container = $("blind-cols-container");
+  container.innerHTML = "";
+  
+  state.blindMapping.forEach((cb, ci) => {
+    const a = r.answers.find(x => x.chatbot === cb);
+    const k = ratingKey(r.question, cb);
+    const existing = state.userRatings[k];
+    
+    // Default to existing rating, or the judge average if we want a baseline, or just 5.
+    // We'll use 5 as default to avoid biasing the human judge.
+    const cVal = existing?.completeness ?? 5;
+    const pVal = existing?.precision    ?? 5;
+    const notes = existing?.notes || "";
+    const isSaved = !!existing?.savedAt;
+    
+    const ansText = (a && !a.error && a.answer) ? a.answer : `(No answer generated / Error: ${a?.error || "Unknown"})`;
+    
+    const colHtml = `
+      <div class="blind-col">
+        <div class="blind-col-head">Model ${String.fromCharCode(65 + ci)} ${isSaved ? '<span style="color:var(--green)">✓ saved</span>' : ''}</div>
+        <div class="blind-col-pre">${escapeHtml(ansText)}</div>
+        <div class="blind-col-rating">
+          <div class="slider-row">
+            <label>complete</label>
+            <input type="range" id="b-comp-${ci}" min="0" max="10" step="1" value="${cVal}">
+            <span class="slider-val" id="b-comp-val-${ci}">${cVal}</span>
+          </div>
+          <div class="slider-row">
+            <label>precise</label>
+            <input type="range" id="b-prec-${ci}" min="0" max="10" step="1" value="${pVal}">
+            <span class="slider-val" id="b-prec-val-${ci}">${pVal}</span>
+          </div>
+          <textarea id="b-notes-${ci}" rows="2" placeholder="Notes (optional)"></textarea>
+        </div>
+      </div>
+    `;
+    container.insertAdjacentHTML("beforeend", colHtml);
+    $("b-notes-" + ci).value = notes;
+    
+    // Live update slider values
+    $("b-comp-" + ci).addEventListener("input", e => $("b-comp-val-" + ci).textContent = e.target.value);
+    $("b-prec-" + ci).addEventListener("input", e => $("b-prec-val-" + ci).textContent = e.target.value);
+  });
+  
+  $("blind-modal-bg").classList.add("open");
+}
+
+$("btn-blind-judge").addEventListener("click", () => openBlindModal(0));
+$("btn-blind-prev").addEventListener("click", () => openBlindModal(state.blindIndex - 1));
+$("btn-blind-next").addEventListener("click", () => openBlindModal(state.blindIndex + 1));
+$("btn-blind-close").addEventListener("click", () => {
+  $("blind-modal-bg").classList.remove("open");
+});
+
+$("btn-blind-save").addEventListener("click", async () => {
+  const validResults = state.results.filter(Boolean);
+  if (validResults.length === 0) return;
+  const r = validResults[state.blindIndex];
+  
+  // Read and save all 4 columns
+  state.blindMapping.forEach((cb, ci) => {
+    const k = ratingKey(r.question, cb);
+    const cVal = parseInt($("b-comp-" + ci).value);
+    const pVal = parseInt($("b-prec-" + ci).value);
+    const notes = $("b-notes-" + ci).value.trim();
+    
+    state.userRatings[k] = {
+      completeness: cVal,
+      precision: pVal,
+      notes: notes,
+      savedAt: Date.now()
+    };
+  });
+  
+  await persistUserRatings();
+  
+  // Re-render the affected row in the main table
+  const origIdx = state.results.indexOf(r);
+  if (origIdx >= 0) renderResultRow(origIdx, r);
+  
+  $("blind-status-msg").textContent = "✓ Ratings saved!";
+  $("blind-status-msg").style.color = "var(--green)";
+  
+  // Auto-advance after a short delay
+  setTimeout(() => {
+    if (state.blindIndex < validResults.length - 1) {
+      openBlindModal(state.blindIndex + 1);
+    }
+  }, 400);
+});
