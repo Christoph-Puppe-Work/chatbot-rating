@@ -61,8 +61,8 @@ async function loadKeys() {
 }
 async function saveKeys() {
   await chrome.storage.local.set({
-    geminiKey: $("gemini-key").value.trim(),
-    claudeKey: $("claude-key").value.trim(),
+    geminiKey: $("gemini-key")?.value?.trim() || "",
+    claudeKey: $("claude-key")?.value?.trim() || "",
   });
 }
 $("gemini-key").addEventListener("change", saveKeys);
@@ -1000,13 +1000,38 @@ $("btn-infographic").addEventListener("click", () => {
 $("btn-start").addEventListener("click", async () => {
   if (state.running) return;
   await saveKeys();
+  
+  const fileInput = $("question-file");
+  let customQuestions = null;
+  if (fileInput && fileInput.files.length > 0) {
+    const file = fileInput.files[0];
+    try {
+      const text = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = e => resolve(e.target.result);
+        reader.onerror = e => reject(e);
+        reader.readAsText(file);
+      });
+      customQuestions = text.split(/\r?\n/).map(line => line.trim()).filter(line => line.length > 0);
+      if (customQuestions.length === 0) {
+        log("err", "Uploaded file contains no valid questions.");
+        return;
+      }
+    } catch (err) {
+      log("err", "Failed to read custom questions file.");
+      return;
+    }
+  }
+
   const config = {
-    geminiKey: $("gemini-key").value.trim(),
-    claudeKey: $("claude-key").value.trim(),
-    source: $("source").value,
-    count: parseInt($("count").value) || 10,
-    maxWaitMs: (parseInt($("max-wait").value) || 180) * 1000,
-    maxConcurrent: Math.max(1, Math.min(40, parseInt($("max-concurrent").value) || 8)),
+    geminiKey: $("gemini-key")?.value?.trim() || "",
+    claudeKey: $("claude-key")?.value?.trim() || "",
+    source: $("source")?.value || "",
+    count: parseInt($("count")?.value) || 10,
+    maxWaitMs: (parseInt($("max-wait")?.value) || 300) * 1000,
+    maxConcurrent: Math.max(1, Math.min(40, parseInt($("max-concurrent")?.value) || 8)),
+    autoclose: $("autoclose") ? $("autoclose").checked : true,
+    customQuestions,
   };
   if (!config.geminiKey) { log("err", "Gemini API key missing"); return; }
   if (!config.claudeKey) { log("err", "Anthropic API key missing"); return; }

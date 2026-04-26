@@ -535,7 +535,7 @@ td.score .user-badge {
     </div>
     <div class="field">
       <label>Max wait per answer (s)</label>
-      <input id="max-wait" type="number" min="30" max="600" value="180">
+      <input id="max-wait" type="number" min="30" max="1200" value="300">
       <div class="hint">Hard timeout if a chatbot stalls</div>
     </div>
     <div class="field">
@@ -545,9 +545,21 @@ td.score .user-badge {
     </div>
   </div>
   <div class="row" style="margin-top: 16px;">
-    <div class="field" style="display: flex; align-items: center; gap: 12px;">
-      <span id="status-pill" class="status-pill">idle</span>
-      <span class="hint" style="margin: 0;">total tasks = count × 4 chatbots · peak open tabs = concurrency cap</span>
+    <div class="field">
+      <label>Custom Questions File (Overrides News Source)</label>
+      <input id="question-file" type="file" accept=".txt,.csv" style="padding: 6px;">
+      <div class="hint">Upload a .txt or .csv file with one question per line. Will bypass Hacker News fetch.</div>
+    </div>
+  </div>
+  <div class="row" style="margin-top: 16px;">
+    <div class="field" style="display: flex; align-items: center; justify-content: space-between;">
+      <div style="display: flex; align-items: center; gap: 12px;">
+        <span id="status-pill" class="status-pill">idle</span>
+        <span class="hint" style="margin: 0;">total tasks = count × 4 chatbots · peak open tabs = concurrency cap</span>
+      </div>
+      <label style="display: flex; gap: 6px; align-items: center; cursor: pointer; color: var(--text-quiet); font-size: 11px;">
+        <input type="checkbox" id="autoclose" checked> autoclose tabs
+      </label>
     </div>
   </div>
 </section>

@@ -17,9 +17,37 @@
       'button[mat-icon-button][aria-label*="senden"]',
       'button[mat-icon-button][aria-label*="Send"]',
     ],
-    messageContent: 'message-content[id^="message-content-id-r_"]',
+    // Primary: the markdown panel inside the response (has aria-busy)
     markdownPanel: '.markdown.markdown-main-panel',
+    // Fallback: the message-content wrapper
+    messageContent: 'message-content[id^="message-content-id-r_"]',
+    // Fallback 2: the structured-content-container holding the response text
+    structuredContent: 'structured-content-container.model-response-text',
   };
+
+  /** Re-query the DOM every poll to avoid stale Angular references. */
+  function findResponseText() {
+    // Best: the markdown panel has the clean answer text + aria-busy signal
+    const panel = document.querySelector(SEL.markdownPanel);
+    if (panel) {
+      return {
+        text: (panel.innerText || "").trim(),
+        ariaBusy: panel.getAttribute("aria-busy"),
+      };
+    }
+    // Fallback: message-content wrapper (last one on page)
+    const msgs = document.querySelectorAll(SEL.messageContent);
+    if (msgs.length) {
+      const last = msgs[msgs.length - 1];
+      return { text: (last.innerText || "").trim(), ariaBusy: null };
+    }
+    // Fallback 2: structured-content-container
+    const sc = document.querySelector(SEL.structuredContent);
+    if (sc) {
+      return { text: (sc.innerText || "").trim(), ariaBusy: null };
+    }
+    return { text: "", ariaBusy: null };
+  }
 
   async function ask(question, { maxWaitMs = 180000 } = {}) {
     B.log("gemini: locating composer…");
@@ -37,38 +65,40 @@
       await B.sleep(150);
       sendBtn = B.pickOne(SEL.sendBtn);
     }
-    if (sendBtn) {
+    if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute("aria-disabled") !== "true") {
       B.realClick(sendBtn);
     } else {
       composer.focus();
       composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
     }
 
-    B.log("gemini: waiting for message-content…");
-    const msg = await B.waitForSelector([SEL.messageContent], { timeoutMs: 30000 });
-    if (!msg) throw new Error("gemini: no message-content appeared");
+    B.log("gemini: waiting for response element…");
+    // Wait until we see SOME response element appear
+    const appeared = await B.waitForSelector(
+      [SEL.markdownPanel, SEL.messageContent, SEL.structuredContent],
+      { timeoutMs: 30000 }
+    );
+    if (!appeared) throw new Error("gemini: no response element appeared");
 
     B.log("gemini: watching for completion…");
     let lastText = "";
     let lastChange = Date.now();
     while (Date.now() - tStart < maxWaitMs) {
       await B.sleep(400);
-      const panel = msg.querySelector(SEL.markdownPanel);
-      const text = panel ? (panel.innerText || "").trim() : "";
+      const { text, ariaBusy } = findResponseText();
       if (text !== lastText) {
         lastText = text;
         lastChange = Date.now();
       }
-      const busy = panel?.getAttribute("aria-busy");
-      const ariaBusyDone = busy === "false";
+      const ariaBusyDone = ariaBusy === "false";
       const stableFor = Date.now() - lastChange;
-      if (text.length >= 100 && (ariaBusyDone || stableFor >= 5000)) {
+      if (text.length >= 10 && (ariaBusyDone || stableFor >= 5000)) {
         const ms = Date.now() - tStart;
         B.log(`gemini: ${ariaBusyDone ? "aria-busy" : "stable"} after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
     }
-    if (lastText.length < 30) throw new Error(`gemini: timeout, response too short (${lastText.length} chars)`);
+    if (lastText.length < 10) throw new Error(`gemini: timeout, response too short (${lastText.length} chars)`);
     const ms = Date.now() - tStart;
     B.log(`gemini: timeout after ${ms}ms, ${lastText.length} chars`);
     return { answer: lastText, durationMs: ms };

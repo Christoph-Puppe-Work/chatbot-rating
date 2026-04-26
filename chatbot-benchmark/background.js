@@ -58,31 +58,39 @@ function send(type, payload) {
 async function runBenchmark(config) {
   send("LOG", { level: "info", msg: `starting run · ${config.count} questions · source=${config.source}` });
 
-  // 1. fetch news
-  send("PHASE", { phase: "news", done: 0, total: 1 });
-  const articles = await fetchNews(config.source, config.count);
-  send("LOG", { level: "ok", msg: `fetched ${articles.length} articles` });
-  send("PHASE", { phase: "news", done: 1, total: 1 });
+  let validQuestions = [];
 
-  // 2. generate questions in parallel
-  send("PHASE", { phase: "questions", done: 0, total: articles.length });
-  const questions = [];
-  let qDone = 0;
-  await Promise.all(articles.map(async (a, i) => {
-    try {
-      const q = await generateQuestion(a, config.geminiKey);
-      questions[i] = { article: a, question: q };
-      send("LOG", { level: "debug", msg: `Q${i+1}: ${q.slice(0, 80)}…` });
-    } catch (e) {
-      send("LOG", { level: "err", msg: `Q${i+1} gen failed: ${e.message}` });
-      questions[i] = { article: a, question: null };
-    } finally {
-      qDone++;
-      send("PHASE", { phase: "questions", done: qDone, total: articles.length });
-    }
-  }));
+  if (config.customQuestions && config.customQuestions.length > 0) {
+    send("LOG", { level: "info", msg: `using ${config.customQuestions.length} custom questions from file` });
+    validQuestions = config.customQuestions.map(q => ({ article: null, question: q }));
+    send("PHASE", { phase: "news", done: 1, total: 1 });
+    send("PHASE", { phase: "questions", done: validQuestions.length, total: validQuestions.length });
+  } else {
+    // 1. fetch news
+    send("PHASE", { phase: "news", done: 0, total: 1 });
+    const articles = await fetchNews(config.source, config.count);
+    send("LOG", { level: "ok", msg: `fetched ${articles.length} articles` });
+    send("PHASE", { phase: "news", done: 1, total: 1 });
 
-  const validQuestions = questions.filter(q => q.question);
+    // 2. generate questions in parallel
+    send("PHASE", { phase: "questions", done: 0, total: articles.length });
+    const questions = [];
+    let qDone = 0;
+    await Promise.all(articles.map(async (a, i) => {
+      try {
+        const q = await withRetry(() => generateQuestion(a, config.geminiKey), 3);
+        questions[i] = { article: a, question: q };
+        send("LOG", { level: "debug", msg: `Q${i+1}: ${q.slice(0, 80)}…` });
+      } catch (e) {
+        send("LOG", { level: "err", msg: `Q${i+1} gen failed: ${e.message}` });
+        questions[i] = { article: a, question: null };
+      } finally {
+        qDone++;
+        send("PHASE", { phase: "questions", done: qDone, total: articles.length });
+      }
+    }));
+    validQuestions = questions.filter(q => q.question);
+  }
   if (validQuestions.length === 0) throw new Error("no questions generated");
   send("QUESTIONS_READY", { questions: validQuestions });
 
@@ -141,8 +149,8 @@ async function runBenchmark(config) {
       send("LOG", { level: "err", msg: `Q${qi+1}/${cb.label} failed: ${e.message}` });
       return { qi, chatbot: cb.id, answer: "", durationMs: ms, error: String(e.message) };
     } finally {
-      // always close the tab when done
-      if (tabId !== null) {
+      // conditionally close the tab when done
+      if (tabId !== null && config.autoclose !== false) {
         try { await chrome.tabs.remove(tabId); } catch {}
       }
       completed++;
@@ -161,30 +169,43 @@ async function runBenchmark(config) {
     });
   }
 
-  // 4. judge each answer (also fully parallel across all answers)
+  // 4. judge each answer
   send("LOG", { level: "info", msg: "all answers in, judging…" });
   const results = [];
-  const judgePromises = [];
+  
+  const judgeTasks = [];
   for (let qi = 0; qi < validQuestions.length; qi++) {
     const { question, article } = validQuestions[qi];
-    judgePromises.push((async () => {
-      const judged = await Promise.all(askResultsByQ[qi].map(async ar => {
-        if (ar.error || !ar.answer) {
-          return { ...ar, scores: { gemini: null, claude: null }, errored: true };
-        }
-        const [gScore, cScore] = await Promise.all([
-          judgeWithGemini(question, ar.answer, config.geminiKey).catch(e => ({ error: e.message })),
-          judgeWithClaude(question, ar.answer, config.claudeKey).catch(e => ({ error: e.message })),
-        ]);
-        send("LOG", { level: "debug", msg: `  Q${qi+1}/${ar.chatbot}: gemini=${fmtScore(gScore)} claude=${fmtScore(cScore)}` });
-        return { ...ar, scores: { gemini: gScore, claude: cScore } };
-      }));
-      const result = { question, article, answers: judged };
-      results[qi] = result;
-      send("PARTIAL_RESULT", { index: qi, result });
-    })());
+    results[qi] = { question, article, answers: new Array(askResultsByQ[qi].length) };
+    for (let ci = 0; ci < askResultsByQ[qi].length; ci++) {
+      judgeTasks.push({ qi, ci, question, ar: askResultsByQ[qi][ci] });
+    }
   }
-  await Promise.all(judgePromises);
+
+  // Limit judging to 2 concurrent tasks to avoid hitting 30k TPM rate limits
+  await runWithConcurrency(judgeTasks, 2, async (task) => {
+    const { qi, ci, question, ar } = task;
+    if (ar.error || !ar.answer) {
+      results[qi].answers[ci] = { ...ar, scores: { gemini: null, claude: null }, errored: true };
+    } else {
+      const [gScore, cScore] = await Promise.all([
+        withRetry(() => judgeWithGemini(question, ar.answer, config.geminiKey), 3).catch(e => ({ error: e.message })),
+        withRetry(() => judgeWithClaude(question, ar.answer, config.claudeKey), 3).catch(e => ({ error: e.message })),
+      ]);
+      await sleep(2000); // intentional throttle
+      send("LOG", { level: "debug", msg: `  Q${qi+1}/${ar.chatbot}: gemini=${fmtScore(gScore)} claude=${fmtScore(cScore)}` });
+      results[qi].answers[ci] = { ...ar, scores: { gemini: gScore, claude: cScore } };
+    }
+    
+    // Check if this question is fully judged
+    let done = 0;
+    for (let i = 0; i < results[qi].answers.length; i++) {
+      if (results[qi].answers[i]) done++;
+    }
+    if (done === results[qi].answers.length) {
+      send("PARTIAL_RESULT", { index: qi, result: results[qi] });
+    }
+  });
 
   send("RESULTS", { results });
   send("LOG", { level: "ok", msg: "run complete" });
@@ -226,6 +247,7 @@ async function geminiCall(apiKey, prompt, schema) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
   const body = {
     contents: [{ role: "user", parts: [{ text: prompt }] }],
+    tools: [{ googleSearch: {} }],
     generationConfig: {
       responseMimeType: "application/json",
       responseJsonSchema: schema,
@@ -299,6 +321,7 @@ async function judgeWithClaude(question, answer, claudeKey) {
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: 800,
+      tools: [{ type: "web_search_20260209", name: "web_search" }],
       messages: [{ role: "user", content: prompt + "\n\nReply with ONLY a JSON object, no prose, no markdown fences." }],
     }),
   });
@@ -340,6 +363,17 @@ Output JSON only:
 // ---------- utils ----------
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function withRetry(fn, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (i === maxRetries - 1) throw e;
+      await sleep(2000 * (i + 1)); // Exponential-ish backoff
+    }
+  }
+}
 
 // Run an async function over an array of items, with at most `limit`
 // in-flight at any time. Returns results in the same order as the input.
