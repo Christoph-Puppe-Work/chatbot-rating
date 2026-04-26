@@ -23,13 +23,52 @@
     actionButtons: '.action-buttons',
   };
 
-  function findContainerFor(msgEl) {
-    let n = msgEl;
-    while (n && n !== document.body) {
-      if (n.id && n.id.startsWith("response-")) return n;
-      n = n.parentElement;
+  /**
+   * Safely extract text in background tabs.
+   * Includes logic to prevent duplicating text from nested block elements.
+   */
+  function extractText(el) {
+    if (!el) return "";
+
+    const blockTags = ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'PRE', 'BLOCKQUOTE'];
+    const blocks = el.querySelectorAll(blockTags.join(', '));
+
+    if (blocks.length > 0) {
+      const topLevelBlocks = Array.from(blocks).filter(node => {
+        let parent = node.parentElement;
+        while (parent && parent !== el) {
+          if (blockTags.includes(parent.tagName)) return false;
+          parent = parent.parentElement;
+        }
+        return true;
+      });
+
+      return topLevelBlocks
+        .map(b => (b.textContent || "").trim())
+        .filter(Boolean)
+        .join("\n\n");
     }
-    return null;
+
+    return (el.innerText || el.textContent || "").trim();
+  }
+
+  function extractLastAnswer() {
+    const msgs = document.querySelectorAll(SEL.msgBody);
+    if (!msgs.length) {
+      // Fallback: look for the assistant message wrapper
+      const fallbacks = document.querySelectorAll(SEL.assistantMsg);
+      if (!fallbacks.length) return "";
+      return extractText(fallbacks[fallbacks.length - 1]);
+    }
+    return extractText(msgs[msgs.length - 1]);
+  }
+
+  function checkIsDoneLocally() {
+    // Check if the action buttons have appeared and have the 'last-response' class
+    const actions = document.querySelectorAll(SEL.actionButtons);
+    if (!actions.length) return false;
+    const lastAction = actions[actions.length - 1];
+    return lastAction.classList.contains("last-response");
   }
 
   async function ask(question, { maxWaitMs = 180000 } = {}) {
@@ -44,10 +83,12 @@
     B.log("grok: submitting…");
     const tStart = Date.now();
     let submitBtn = B.pickOne(SEL.submitBtn);
+
     while (submitBtn && (submitBtn.disabled || submitBtn.getAttribute("aria-disabled") === "true") && Date.now() - tStart < 5000) {
       await B.sleep(150);
       submitBtn = B.pickOne(SEL.submitBtn);
     }
+
     if (submitBtn) {
       B.realClick(submitBtn);
     } else {
@@ -56,31 +97,35 @@
     }
 
     B.log("grok: waiting for assistant message…");
-    const msg = await B.waitForSelector([SEL.assistantMsg], { timeoutMs: 30000 });
+    // Wait for either the explicit message wrapper or the markdown body
+    const msg = await B.waitForSelector([SEL.assistantMsg, SEL.msgBody], { timeoutMs: 30000 });
     if (!msg) throw new Error("grok: no assistant message appeared");
-    const container = findContainerFor(msg);
 
     B.log("grok: watching for completion…");
     let lastText = "";
     let lastChange = Date.now();
+
     while (Date.now() - tStart < maxWaitMs) {
       await B.sleep(400);
-      const body = msg.querySelector(SEL.msgBody) || msg;
-      const text = (body.innerText || "").trim();
+
+      const text = extractLastAnswer();
       if (text !== lastText) {
         lastText = text;
         lastChange = Date.now();
       }
-      const actions = container?.querySelector(SEL.actionButtons);
-      const hasLastResponse = actions && actions.classList.contains("last-response");
+
+      const hasLastResponse = checkIsDoneLocally();
       const stableFor = Date.now() - lastChange;
-      if (text.length >= 100 && (hasLastResponse || stableFor >= 4000)) {
+
+      // We reduced the character limit to 10 to catch short "Test successful" answers
+      if (text.length >= 10 && (hasLastResponse || stableFor >= 4000)) {
         const ms = Date.now() - tStart;
         B.log(`grok: ${hasLastResponse ? "last-response" : "stable"} after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
     }
-    if (lastText.length < 30) throw new Error(`grok: timeout, response too short (${lastText.length} chars)`);
+
+    if (lastText.length < 10) throw new Error(`grok: timeout, response too short (${lastText.length} chars)`);
     const ms = Date.now() - tStart;
     B.log(`grok: timeout after ${ms}ms, ${lastText.length} chars`);
     return { answer: lastText, durationMs: ms };

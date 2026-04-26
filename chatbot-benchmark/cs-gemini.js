@@ -17,36 +17,49 @@
       'button[mat-icon-button][aria-label*="senden"]',
       'button[mat-icon-button][aria-label*="Send"]',
     ],
-    // Primary: the markdown panel inside the response (has aria-busy)
+    // The single source of truth for the response text and streaming state
     markdownPanel: '.markdown.markdown-main-panel',
-    // Fallback: the message-content wrapper
-    messageContent: 'message-content[id^="message-content-id-r_"]',
-    // Fallback 2: the structured-content-container holding the response text
-    structuredContent: 'structured-content-container.model-response-text',
   };
 
+  /**
+   * Safely extract text in background tabs.
+   * Includes logic to prevent duplicating text from nested block elements.
+   */
+  function extractText(el) {
+    if (!el) return "";
+
+    const blockTags = ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'PRE', 'BLOCKQUOTE'];
+    const blocks = el.querySelectorAll(blockTags.join(', '));
+
+    if (blocks.length > 0) {
+      const topLevelBlocks = Array.from(blocks).filter(node => {
+        let parent = node.parentElement;
+        while (parent && parent !== el) {
+          if (blockTags.includes(parent.tagName)) return false;
+          parent = parent.parentElement;
+        }
+        return true;
+      });
+
+      return topLevelBlocks
+        .map(b => (b.textContent || "").trim())
+        .filter(Boolean)
+        .join("\n\n");
+    }
+
+    return (el.innerText || el.textContent || "").trim();
+  }
+
   /** Re-query the DOM every poll to avoid stale Angular references. */
-  function findResponseText() {
-    // Best: the markdown panel has the clean answer text + aria-busy signal
+  function queryResponse() {
     const panel = document.querySelector(SEL.markdownPanel);
-    if (panel) {
-      return {
-        text: (panel.innerText || "").trim(),
-        ariaBusy: panel.getAttribute("aria-busy"),
-      };
-    }
-    // Fallback: message-content wrapper (last one on page)
-    const msgs = document.querySelectorAll(SEL.messageContent);
-    if (msgs.length) {
-      const last = msgs[msgs.length - 1];
-      return { text: (last.innerText || "").trim(), ariaBusy: null };
-    }
-    // Fallback 2: structured-content-container
-    const sc = document.querySelector(SEL.structuredContent);
-    if (sc) {
-      return { text: (sc.innerText || "").trim(), ariaBusy: null };
-    }
-    return { text: "", ariaBusy: null };
+    if (!panel) return { text: "", isBusy: true };
+
+    return {
+      text: extractText(panel),
+      // If the attribute is literally "false", it's done. Otherwise assume busy.
+      isBusy: panel.getAttribute("aria-busy") !== "false"
+    };
   }
 
   async function ask(question, { maxWaitMs = 180000 } = {}) {
@@ -65,6 +78,7 @@
       await B.sleep(150);
       sendBtn = B.pickOne(SEL.sendBtn);
     }
+
     if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute("aria-disabled") !== "true") {
       B.realClick(sendBtn);
     } else {
@@ -72,32 +86,41 @@
       composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
     }
 
-    B.log("gemini: waiting for response element…");
-    // Wait until we see SOME response element appear
-    const appeared = await B.waitForSelector(
-      [SEL.markdownPanel, SEL.messageContent, SEL.structuredContent],
-      { timeoutMs: 30000 }
-    );
-    if (!appeared) throw new Error("gemini: no response element appeared");
+    B.log("gemini: waiting for response panel…");
+    // Wait exclusively for the markdown panel, bypassing intermediate loading wrappers
+    const appeared = await B.waitForSelector([SEL.markdownPanel], { timeoutMs: 30000 });
+    if (!appeared) throw new Error("gemini: no response panel appeared");
 
     B.log("gemini: watching for completion…");
     let lastText = "";
     let lastChange = Date.now();
+
     while (Date.now() - tStart < maxWaitMs) {
       await B.sleep(400);
-      const { text, ariaBusy } = findResponseText();
+      const { text, isBusy } = queryResponse();
+
       if (text !== lastText) {
         lastText = text;
         lastChange = Date.now();
       }
-      const ariaBusyDone = ariaBusy === "false";
+
       const stableFor = Date.now() - lastChange;
-      if (text.length >= 10 && (ariaBusyDone || stableFor >= 5000)) {
+
+      // Primary exit: Gemini explicitly tells us it is done via the DOM
+      if (text.length >= 10 && !isBusy) {
         const ms = Date.now() - tStart;
-        B.log(`gemini: ${ariaBusyDone ? "aria-busy" : "stable"} after ${ms}ms, ${text.length} chars`);
+        B.log(`gemini: aria-busy=false after ${ms}ms, ${text.length} chars`);
+        return { answer: text, durationMs: ms };
+      }
+
+      // Safety fallback: If aria-busy gets stuck but text is stable for 8 seconds
+      if (text.length >= 10 && stableFor >= 8000) {
+        const ms = Date.now() - tStart;
+        B.log(`gemini: stable-fallback after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
     }
+
     if (lastText.length < 10) throw new Error(`gemini: timeout, response too short (${lastText.length} chars)`);
     const ms = Date.now() - tStart;
     B.log(`gemini: timeout after ${ms}ms, ${lastText.length} chars`);
