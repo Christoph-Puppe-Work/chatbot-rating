@@ -247,6 +247,17 @@
       (async () => {
         const a = window.__BENCH__?.adapter;
         if (!a) { reply({ ok: false, error: "no adapter registered" }); return; }
+
+        // Acquire a Web Lock for the duration of the ask() call.
+        // This signals to Chrome that this tab is doing critical work and
+        // should NOT be frozen, throttled, or discarded while the lock is held.
+        let lockRelease = null;
+        const lockPromise = navigator.locks?.request(
+          "benchmark-active-" + Date.now(),
+          { mode: "exclusive" },
+          () => new Promise(resolve => { lockRelease = resolve; })
+        );
+
         try {
           const t0 = performance.now();
           const { answer } = await a.ask(msg.question, { maxWaitMs: msg.maxWaitMs });
@@ -254,6 +265,9 @@
         } catch (e) {
           err("ask failed:", e);
           reply({ ok: false, error: String(e?.message || e) });
+        } finally {
+          // Release the Web Lock — Chrome can now throttle/freeze this tab
+          if (lockRelease) lockRelease();
         }
       })();
       return true; // async reply

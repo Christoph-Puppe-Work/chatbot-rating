@@ -108,9 +108,9 @@
     return { text: "", streamingDone: false };
   }
 
-  async function ask(question, { maxWaitMs = 180000 } = {}) {
+  async function ask(question, { maxWaitMs = 300000 } = {}) {
     B.log("claude: locating composer…");
-    const composer = await B.waitForSelector(SEL.composer, { timeoutMs: 30000 });
+    const composer = await B.waitForSelector(SEL.composer, { timeoutMs: maxWaitMs });
     if (!composer) throw new Error("claude composer not found");
 
     B.log("claude: typing question…");
@@ -134,7 +134,7 @@
     }
 
     B.log("claude: waiting for streaming wrapper…");
-    const appeared = await B.waitForSelector([SEL.streamingWrapper], { timeoutMs: 25000 });
+    const appeared = await B.waitForSelector([SEL.streamingWrapper], { timeoutMs: Math.max(0, maxWaitMs - (Date.now() - tStart)) });
     if (!appeared) throw new Error("claude: no streaming wrapper appeared");
 
     B.log("claude: watching for completion…");

@@ -62,9 +62,9 @@
     };
   }
 
-  async function ask(question, { maxWaitMs = 180000 } = {}) {
+  async function ask(question, { maxWaitMs = 300000 } = {}) {
     B.log("gemini: locating composer…");
-    const composer = await B.waitForSelector(SEL.composer, { timeoutMs: 30000 });
+    const composer = await B.waitForSelector(SEL.composer, { timeoutMs: maxWaitMs });
     if (!composer) throw new Error("gemini composer not found");
 
     B.log("gemini: typing question…");
@@ -88,7 +88,7 @@
 
     B.log("gemini: waiting for response panel…");
     // Wait exclusively for the markdown panel, bypassing intermediate loading wrappers
-    const appeared = await B.waitForSelector([SEL.markdownPanel], { timeoutMs: 30000 });
+    const appeared = await B.waitForSelector([SEL.markdownPanel], { timeoutMs: Math.max(0, maxWaitMs - (Date.now() - tStart)) });
     if (!appeared) throw new Error("gemini: no response panel appeared");
 
     B.log("gemini: watching for completion…");

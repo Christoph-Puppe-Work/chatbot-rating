@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chatbot Product Benchmark",
-  "version": "0.9.23",
+  "version": "0.10.2",
   "description": "Benchmark consumer chatbot products (Claude, ChatGPT, Gemini, Grok) on real news questions, judged by Gemini 3.1 Pro + Claude Opus 4.7.",
   "permissions": [
     "storage",
@@ -15,7 +15,16 @@
     "https://grok.com/*",
     "https://hn.algolia.com/*",
     "https://generativelanguage.googleapis.com/*",
-    "https://api.anthropic.com/*"
+    "https://api.anthropic.com/*",
+    "https://www.reddit.com/*",
+    "https://feeds.bbci.co.uk/*",
+    "https://en.wikipedia.org/*",
+    "https://feeds.npr.org/*",
+    "https://www.aljazeera.com/*",
+    "https://rss.dw.com/*",
+    "https://search.cnbc.com/*",
+    "https://people.com/*",
+    "https://www.eonline.com/*"
   ],
   "background": {
     "service_worker": "background.js",

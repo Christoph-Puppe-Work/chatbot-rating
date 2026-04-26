@@ -1,111 +1,179 @@
 # Chatbot Product Benchmark
 
-A Chrome extension that benchmarks the **consumer chatbot products**
-(claude.ai, chatgpt.com, gemini.google.com, grok.com) — not the underlying
-API models — by:
+> **Test the _products_, not the models.**
 
-1. Pulling the latest 10 articles from Hacker News front page
-2. Generating one self-contained question per article via Gemini 3.1 Pro
-3. Opening all four chatbots in real tabs and dispatching the questions
-   through their actual UIs (with all the system-prompt + tool baggage real
-   users get)
-4. Scraping each answer
-5. Scoring each answer 0–10 on **Completeness** and **Precision** using
-   two independent judges: Gemini 3.1 Pro and Claude Opus 4.7
-6. Measuring **Speed** (end-to-end time from submit to streaming-complete)
-7. Producing a results table + CSV export
+A Chrome extension that benchmarks the **consumer chat interfaces** of Claude, ChatGPT, Gemini, and Grok — not their APIs. It sends real questions through the actual web UIs, captures streamed answers via DOM observation, and has the responses judged by two independent LLMs (Gemini 3.1 Pro + Claude Opus 4.7). Optional human override lets you add your own scores in a blind side-by-side comparison.
 
-## Install (developer mode)
+---
 
-1. Open `chrome://extensions/`
-2. Toggle **Developer mode** (top right)
-3. Click **Load unpacked**
-4. Select this folder
-5. **Log in to all four chatbots** in the same browser profile:
-   - https://claude.ai
-   - https://chatgpt.com
-   - https://gemini.google.com/app
-   - https://grok.com
-6. Click the extension icon in the toolbar → dashboard opens in a new tab
-7. Paste your API keys (Gemini + Anthropic) — stored locally only via
-   `chrome.storage.local`, never sent anywhere except the respective APIs
-8. Hit **▶ start benchmark**
+## Why This Exists
 
-## What you'll see
+API benchmarks measure _model_ capability. But what users actually experience is the _product_ — system prompts, tool use, web search, streaming latency, and UI quirks all included. This extension captures that full picture by automating the real browser experience.
 
-- Real-time log console showing every step
-- Four progress bars (news fetch / question gen / opening tabs / asking)
-- Results table populating row-by-row as each question completes
-- Click any score cell to see the full answer + judge reasoning
-- CSV export at the end
+---
 
-## Caveats — read these
-
-**DOM selectors will break.** Each chatbot ships UI changes weekly. The four
-`cs-*.js` files each have a `SEL` object at the top with multiple fallback
-selectors per element. When something fails:
-
-- Open the chatbot's tab, open DevTools, find the new selector
-- Add it to the top of the relevant fallback list in `cs-*.js`
-- Reload the extension in `chrome://extensions/`
-
-Common breakage points:
-- Composer `contenteditable` elements (Claude uses ProseMirror, Gemini uses Quill)
-- Send button (often re-skinned)
-- Streaming-done detection (some sites toggle a stop button, others swap classes)
-
-**Anti-bot detection.** None of these sites publishes an API for their
-consumer product. They may flag automated input. The extension dispatches
-real `pointer*` and `input` events from a logged-in user session — that's
-about as low-friction as it gets — but if a site starts hard-blocking,
-you'll need a cool-down period or fall back to a manual-paste mode (not
-included in v0.1).
-
-**Statistical caveat.** N=10 is small. Run it 3-5 times across different
-days and merge the CSVs for any decision you'd actually act on. Per-answer
-scoring also has judge variance — that's why we use two judges and average.
-
-**Cost.** Per run with default settings: ~10 question-gen calls (Gemini)
-+ 80 judge calls (40 Gemini + 40 Claude). Order of magnitude $0.50–$2.00
-depending on answer length, mostly Claude Opus.
-
-## Files
+## How It Works
 
 ```
-manifest.json        # MV3 manifest, host permissions, content script registrations
-background.js        # service worker: orchestration, news fetch, API calls
-dashboard.html       # the dashboard UI (single file, embedded CSS/JS)
-cs-shared.js         # shared content-script utilities (typing, waiting, message bus)
-cs-claude.js         # claude.ai adapter
-cs-chatgpt.js        # chatgpt.com adapter
-cs-gemini.js         # gemini.google.com adapter
-cs-grok.js           # grok.com adapter
-README.md            # this
+┌─────────────┐     START_BENCHMARK      ┌──────────────┐
+│  Dashboard  │ ──────────────────────── │  Background  │
+│  (UI/port)  │ ◄── LOG, PHASE, RESULT ─│  (service    │
+│             │                          │   worker)    │
+└─────────────┘                          └──────┬───────┘
+                                                │
+          ┌────────────────┬────────────────┬────┴───────────┐
+          ▼                ▼                ▼                ▼
+   ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
+   │ claude.ai   │  │ chatgpt.com │  │ gemini.      │  │ grok.com    │
+   │ tab         │  │ tab         │  │ google.com   │  │ tab         │
+   │             │  │             │  │ tab          │  │             │
+   │ cs-shared + │  │ cs-shared + │  │ cs-shared +  │  │ cs-shared + │
+   │ cs-claude   │  │ cs-chatgpt  │  │ cs-gemini    │  │ cs-grok     │
+   └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘
 ```
 
-## Adding a news source
+### Pipeline
 
-In `background.js`, extend `fetchNews()`:
+1. **Fetch headlines** — Pulls front-page stories from Hacker News (via `hn.algolia.com`).
+2. **Generate questions** — Gemini 3.1 Pro converts each headline into a self-contained factual question (JSON output, structured schema).
+3. **Ask the chatbots** — For each question, the background worker opens a _fresh tab_ per chatbot (fresh-tab strategy: one question per tab, DOM starts empty). Content scripts type the question into the composer, click send, and poll for stream completion.
+4. **Judge answers** — Each answer is scored 0–10 on _completeness_ and _precision_ by both Gemini 3.1 Pro and Claude Opus 4.7 (with web search enabled).
+5. **Display results** — Partial results stream into the dashboard in real time.
 
-```js
-if (source === "techcrunch") {
-  const r = await fetch("https://techcrunch.com/feed/");
-  const xml = await r.text();
-  const doc = new DOMParser().parseFromString(xml, "text/xml");
-  const items = [...doc.querySelectorAll("item")].slice(0, count);
-  return items.map(it => ({
-    title: it.querySelector("title")?.textContent || "",
-    url:   it.querySelector("link")?.textContent || "",
-    source: "techcrunch",
-  }));
-}
-```
+### Custom Questions
 
-Then add a corresponding `<option>` in `dashboard.html` and the host
-permission `"https://techcrunch.com/*"` in `manifest.json`.
+Instead of generating questions from news, you can upload a `.txt` or `.csv` file with one question per line. The file upload skips the news-fetch and question-generation phases entirely.
 
-## Adding a manual-paste fallback
+---
 
-Out of scope for v0.1. The cleanest version: when an adapter throws, the
-dashboard pops a textarea and pauses the run until you paste an answer
-and click continue.
+## Architecture
+
+| File | Role |
+|---|---|
+| `manifest.json` | MV3 Chrome extension manifest — permissions, content script registration, service worker |
+| `background.js` | **Orchestrator** — runs the full benchmark pipeline, talks to external APIs (Gemini, Claude, Hacker News), manages tab lifecycle, dispatches `ASK` messages to content scripts |
+| `cs-shared.js` | **Shared utilities** loaded into every chatbot tab — DOM helpers (`waitForSelector`, `pickOne`, `setComposerText`, `realClick`), universal response capture, and the `chrome.runtime.onMessage` handler that bridges `ASK`/`PING` messages to the per-site adapter |
+| `cs-chatgpt.js` | **ChatGPT adapter** — locates the composer (`#prompt-textarea`), submits via send button or Enter key, detects stream completion by tracking the `#f8aa74` SVG send-icon disappearance→reappearance cycle |
+| `cs-claude.js` | **Claude adapter** — uses `data-is-streaming` attribute on wrapper divs as the primary done signal, with a targeted container selector to skip "Thinking" blocks |
+| `cs-gemini.js` | **Gemini adapter** — uses the `aria-busy` attribute on `.markdown-main-panel` as the completion signal |
+| `cs-grok.js` | **Grok adapter** — detects completion via `.action-buttons.last-response` class appearance |
+| `dashboard.html` | **Dashboard UI** — glassmorphic dark-mode interface with aurora background, progress bars, results table, log console, answer detail modal, user rating sliders, and blind judge mode |
+| `dashboard.js` | **Dashboard logic** — port-based messaging with background worker, results rendering, CSV/infographic export, user rating persistence (`chrome.storage.local`), blind judge mode with randomized column order |
+| `questions.txt` | Sample custom questions file (cybersecurity-themed) |
+
+---
+
+## Content Script Completion Detection
+
+Each chatbot adapter uses a different strategy to know when streaming is finished, because each product has a different DOM structure:
+
+| Chatbot | Primary Signal | Safety Fallback |
+|---|---|---|
+| **ChatGPT** | SVG send-icon (`#f8aa74`) disappears on submit, reappears when done | Text stable for 60 s |
+| **Claude** | `data-is-streaming="true"` → `"false"` on wrapper div | Text stable for 60 s |
+| **Gemini** | `aria-busy="false"` on `.markdown-main-panel` | Text stable for 60 s |
+| **Grok** | `.action-buttons.last-response` class appears | Text stable for 60 s |
+
+All adapters share a common stability buffer (1.5–2.5 s of stable text after the primary signal fires) to avoid exiting during brief UI transition gaps.
+
+---
+
+## Installation
+
+1. Clone this repo (or download the `chatbot-benchmark/` folder).
+2. Open `chrome://extensions` in Chrome.
+3. Enable **Developer mode** (toggle in the top-right).
+4. Click **Load unpacked** and select the `chatbot-benchmark/` directory.
+5. The extension icon appears in the toolbar — click it to open the dashboard.
+
+### Prerequisites
+
+- **Chrome** (or Chromium-based browser with MV3 support)
+- **Logged-in sessions** for all four chatbots in the same browser profile:
+  - [claude.ai](https://claude.ai)
+  - [chatgpt.com](https://chatgpt.com)
+  - [gemini.google.com](https://gemini.google.com)
+  - [grok.com](https://grok.com)
+- **API keys** (entered in the dashboard, stored in `chrome.storage.local` — never leave the browser):
+  - Gemini API key ([aistudio.google.com/apikey](https://aistudio.google.com/apikey)) — used for question generation + judge #1
+  - Anthropic API key ([console.anthropic.com](https://console.anthropic.com)) — used for judge #2
+
+---
+
+## Dashboard Settings
+
+| Setting | Default | Description |
+|---|---|---|
+| **Question count** | 10 | Number of Hacker News headlines to fetch and convert to questions |
+| **Max wait per answer** | 300 s | Hard timeout if a chatbot stalls — all adapters and the background worker respect this value |
+| **Max concurrent tabs** | 8 | Cap on how many chatbot tabs are open simultaneously. Lower = safer (less memory), higher = faster |
+| **Autoclose tabs** | ✓ | Automatically close each tab after it returns an answer |
+| **Custom questions file** | — | Upload a `.txt`/`.csv` file (one question per line) to bypass news fetching entirely |
+
+---
+
+## Scoring
+
+Each answer is scored on two dimensions (0–10):
+
+- **Completeness** — Does it address all aspects of the question?
+- **Precision** — How factually accurate, specific, and well-grounded is the answer?
+
+The dashboard table shows the average of both judges' scores per cell. Clicking any cell opens a detail modal showing the full answer, each judge's reasoning, and sliders for your own human rating. **Your rating overrides both judges** in the table and all exports.
+
+---
+
+## Blind Judge Mode
+
+After a run completes, click **▶ Blind Judge** to enter a full-screen side-by-side comparison. All four answers are shown in randomized columns labeled "Model A" through "Model D" — you don't see which chatbot produced which answer. Rate each column on completeness and precision, then save. The mapping is revealed in the results table, and your scores feed into the summary averages.
+
+---
+
+## Exports
+
+| Export | Format | Contents |
+|---|---|---|
+| **CSV** | `.csv` (UTF-8 BOM) | Per-question, per-chatbot breakdown: both judge scores, user scores, duration, character count, errors |
+| **Infographic** | Standalone `.html` | Self-contained dark-mode report with quality ranking bars, speed comparison, per-question heatmap, methodology footer. Works offline, print-friendly |
+
+---
+
+## Concurrency Model
+
+The extension uses a **full-parallel, fresh-tab** strategy:
+
+- Every `(question, chatbot)` pair gets its own tab, opened to a fresh URL (e.g. `https://claude.ai/new`).
+- A configurable concurrency limiter (`runWithConcurrency`) caps the number of simultaneously open tabs.
+- After each tab returns its answer, it is closed (if autoclose is enabled) and the slot is freed for the next task.
+- The background worker dispatches `ASK` messages and collects responses via `chrome.tabs.sendMessage`.
+
+This avoids conversation-history contamination between questions and sidesteps DOM caching issues from prior answers.
+
+---
+
+## Background Tab Resilience
+
+Chrome aggressively throttles background tabs (timers, animations, DOM updates). The adapters handle this with:
+
+- **No reliance on `innerText` layout** — text extraction walks `node.textContent` recursively (works even when the tab is not painted).
+- **Long safety-fallback timeouts** — if the primary completion signal is missed due to throttling, a 60-second stable-text fallback ensures the answer is still captured.
+- **State-machine detection** (ChatGPT) — the `#f8aa74` send-icon must be observed to _disappear_ before its _reappearance_ counts as a completion signal, preventing false positives from the initial page state.
+
+---
+
+## Limitations
+
+- **Small N** — With 10–20 questions per run, results are directional snapshots, not statistically significant benchmarks.
+- **Tech-news scope** — Questions are sourced from Hacker News, so scores reflect tech/news comprehension specifically — not coding, math, creative writing, or other dimensions.
+- **UI fragility** — Content scripts depend on DOM selectors that can break when chatbot UIs are updated. The multi-selector fallback chains mitigate this, but periodic maintenance is expected.
+- **Rate limits** — Judging uses two API calls per answer (Gemini + Claude). The extension throttles to 2 concurrent judge tasks to stay within typical API rate limits.
+
+---
+
+## Version
+
+**v0.9.24** — Current release.
+
+## License
+
+Not specified — please add a license file if you plan to distribute.

@@ -13,6 +13,32 @@ const state = {
   blindMapping: [],     // shuffled array of chatbot names
 };
 
+// Default judge prompt template — editable in the UI textarea.
+// {{QUESTION}} and {{ANSWER}} are replaced at judge time.
+const DEFAULT_JUDGE_PROMPT = `You are an expert evaluator of AI chatbot answers.
+
+Score the ANSWER below 0–10 on two dimensions:
+
+- COMPLETENESS: does it address all aspects of the question?
+  0 = ignores most of what was asked
+  5 = covers the main thrust but misses important angles
+  10 = thoroughly addresses every part of the question
+
+- PRECISION: how factually accurate, specific, and well-grounded is it?
+  0 = mostly wrong, vague, or hedged into uselessness
+  5 = mixed — some specifics, some hand-waving, possibly minor errors
+  10 = accurate, specific, well-supported, no notable errors
+
+QUESTION:
+{{QUESTION}}
+
+ANSWER:
+{{ANSWER}}
+
+Output JSON only:
+{"completeness": <int 0-10>, "precision": <int 0-10>, "reasoning": "<one or two sentence justification>"}`;
+
+
 // Stable key for a (question, chatbot) pair. Same question + chatbot = same key
 // across runs, so user ratings survive re-runs and dashboard reloads.
 function ratingKey(question, chatbot) {
@@ -71,6 +97,7 @@ $("gemini-key").addEventListener("change", saveKeys);
 $("claude-key").addEventListener("change", saveKeys);
 loadKeys();
 loadUserRatings();
+$('judge-prompt').value = DEFAULT_JUDGE_PROMPT;
 
 // ===== status pill =====
 function setStatus(text, cls) {
@@ -1034,6 +1061,7 @@ $("btn-start").addEventListener("click", async () => {
     maxConcurrent: Math.max(1, Math.min(40, parseInt($("max-concurrent")?.value) || 8)),
     autoclose: $("autoclose") ? $("autoclose").checked : true,
     customQuestions,
+    judgePrompt: $('judge-prompt')?.value?.trim() || DEFAULT_JUDGE_PROMPT,
   };
   if (!config.geminiKey) { log("err", "Gemini API key missing"); return; }
   if (!config.claudeKey) { log("err", "Anthropic API key missing"); return; }
@@ -1081,6 +1109,7 @@ function handleBgMessage(msg) {
       $("btn-export").classList.remove("hidden");
       $("btn-infographic").classList.remove("hidden");
       $("btn-blind-judge").classList.remove("hidden");
+      $("btn-rejudge").classList.remove("hidden");
       break;
     case "DONE":
       state.running = false;
@@ -1088,6 +1117,7 @@ function handleBgMessage(msg) {
       $("btn-export").classList.remove("hidden");
       $("btn-infographic").classList.remove("hidden");
       $("btn-blind-judge").classList.remove("hidden");
+      $("btn-rejudge").classList.remove("hidden");
       break;
     case "ERROR":
       log("err", msg.payload.message);
@@ -1095,6 +1125,38 @@ function handleBgMessage(msg) {
       break;
   }
 }
+
+// ===== re-judge mode =====
+$("btn-rejudge").addEventListener("click", async () => {
+  if (state.running) return;
+  const validResults = state.results.filter(Boolean);
+  if (validResults.length === 0) { log("err", "no results to re-judge"); return; }
+
+  await saveKeys();
+  const config = {
+    geminiKey: $("gemini-key")?.value?.trim() || "",
+    claudeKey: $("claude-key")?.value?.trim() || "",
+    judgePrompt: $("judge-prompt")?.value?.trim() || DEFAULT_JUDGE_PROMPT,
+  };
+  if (!config.geminiKey) { log("err", "Gemini API key missing"); return; }
+  if (!config.claudeKey) { log("err", "Anthropic API key missing"); return; }
+
+  state.running = true;
+  $("btn-start").disabled = true;
+  $("btn-rejudge").disabled = true;
+  setStatus("re-judging", "running");
+  log("info", `re-judging ${validResults.length} questions with current prompt`);
+
+  const port = chrome.runtime.connect({ name: "dashboard" });
+  state.port = port;
+  port.onMessage.addListener(msg => handleBgMessage(msg));
+  port.onDisconnect.addListener(() => {
+    state.running = false;
+    $("btn-start").disabled = false;
+    $("btn-rejudge").disabled = false;
+  });
+  port.postMessage({ type: "REJUDGE", config, results: state.results });
+});
 
 // ===== blind judge mode =====
 function shuffleArray(arr) {

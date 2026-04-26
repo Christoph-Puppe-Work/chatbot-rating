@@ -20,7 +20,6 @@
     ],
     assistantMsg: 'div[data-testid="assistant-message"]',
     msgBody: '.response-content-markdown.markdown',
-    actionButtons: '.action-buttons',
   };
 
   /**
@@ -64,16 +63,26 @@
   }
 
   function checkIsDoneLocally() {
-    // Check if the action buttons have appeared and have the 'last-response' class
-    const actions = document.querySelectorAll(SEL.actionButtons);
-    if (!actions.length) return false;
-    const lastAction = actions[actions.length - 1];
-    return lastAction.classList.contains("last-response");
+    // Three robust, language-independent signals that streaming is complete.
+    // Any one of these is sufficient — we check all three for resilience.
+
+    // 1. "Regenerate" button appears (aria-label is NOT localized, even in German UI)
+    if (document.querySelector('button[aria-label="Regenerate"]')) return true;
+
+    // 2. A .last-response ancestor exists (Tailwind action-button classes reference it
+    //    via [.last-response_&]:opacity-100, so the class is functional, not decorative)
+    if (document.querySelector('.last-response')) return true;
+
+    // 3. Submit button re-enabled after streaming (data-testid is stable)
+    const submitBtn = document.querySelector('button[data-testid="chat-submit"]');
+    if (submitBtn && !submitBtn.disabled) return true;
+
+    return false;
   }
 
-  async function ask(question, { maxWaitMs = 180000 } = {}) {
+  async function ask(question, { maxWaitMs = 300000 } = {}) {
     B.log("grok: locating composer…");
-    const composer = await B.waitForSelector(SEL.composer, { timeoutMs: 30000 });
+    const composer = await B.waitForSelector(SEL.composer, { timeoutMs: maxWaitMs });
     if (!composer) throw new Error("grok composer not found");
 
     B.log("grok: typing question…");
@@ -98,7 +107,7 @@
 
     B.log("grok: waiting for assistant message…");
     // Wait for either the explicit message wrapper or the markdown body
-    const msg = await B.waitForSelector([SEL.assistantMsg, SEL.msgBody], { timeoutMs: 30000 });
+    const msg = await B.waitForSelector([SEL.assistantMsg, SEL.msgBody], { timeoutMs: Math.max(0, maxWaitMs - (Date.now() - tStart)) });
     if (!msg) throw new Error("grok: no assistant message appeared");
 
     B.log("grok: watching for completion…");

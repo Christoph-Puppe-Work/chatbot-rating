@@ -45,6 +45,15 @@ chrome.runtime.onConnect.addListener(port => {
         send("DONE", {});
       }
     }
+    if (msg.type === "REJUDGE") {
+      try {
+        await rejudge(msg.config, msg.results);
+      } catch (e) {
+        send("ERROR", { message: String(e?.message || e) });
+      } finally {
+        send("DONE", {});
+      }
+    }
   });
   port.onDisconnect.addListener(() => { dashboardPort = null; });
 });
@@ -110,6 +119,15 @@ async function runBenchmark(config) {
     }
   }
 
+  // Keep-alive: track all active benchmark tabs and ping them periodically
+  // to prevent Chrome from discarding or freezing them in the background.
+  const activeTabs = new Set();
+  const keepAliveInterval = setInterval(async () => {
+    for (const tid of activeTabs) {
+      try { await chrome.tabs.sendMessage(tid, { type: "PING" }); } catch {}
+    }
+  }, 15000);
+
   const taskResults = await runWithConcurrency(allTasks, concurrency, async (task) => {
     const { qi, cb, question } = task;
     const t0 = performance.now();
@@ -118,6 +136,7 @@ async function runBenchmark(config) {
       // open a fresh tab for this question
       const tab = await chrome.tabs.create({ url: cb.url, active: false });
       tabId = tab.id;
+      activeTabs.add(tabId);
       send("LOG", { level: "debug", msg: `Q${qi+1}/${cb.label}: tab ${tabId} opened` });
 
       // wait for content script to load — poll PING with backoff
@@ -137,7 +156,7 @@ async function runBenchmark(config) {
       const resp = await chrome.tabs.sendMessage(tabId, {
         type: "ASK",
         question,
-        maxWaitMs: config.maxWaitMs ?? 180_000,
+        maxWaitMs: config.maxWaitMs ?? 300_000,
       });
       if (!resp?.ok) throw new Error(resp?.error || "no response");
 
@@ -149,6 +168,7 @@ async function runBenchmark(config) {
       send("LOG", { level: "err", msg: `Q${qi+1}/${cb.label} failed: ${e.message}` });
       return { qi, chatbot: cb.id, answer: "", durationMs: ms, error: String(e.message) };
     } finally {
+      activeTabs.delete(tabId);
       // conditionally close the tab when done
       if (tabId !== null && config.autoclose !== false) {
         try { await chrome.tabs.remove(tabId); } catch {}
@@ -157,6 +177,8 @@ async function runBenchmark(config) {
       send("PHASE", { phase: "asking", done: completed, total: totalTasks });
     }
   });
+
+  clearInterval(keepAliveInterval);
 
   // group results back by question
   const askResultsByQ = validQuestions.map(() => []);
@@ -189,8 +211,8 @@ async function runBenchmark(config) {
       results[qi].answers[ci] = { ...ar, scores: { gemini: null, claude: null }, errored: true };
     } else {
       const [gScore, cScore] = await Promise.all([
-        withRetry(() => judgeWithGemini(question, ar.answer, config.geminiKey), 3).catch(e => ({ error: e.message })),
-        withRetry(() => judgeWithClaude(question, ar.answer, config.claudeKey), 3).catch(e => ({ error: e.message })),
+        withRetry(() => judgeWithGemini(question, ar.answer, config.geminiKey, config.judgePrompt), 3).catch(e => ({ error: e.message })),
+        withRetry(() => judgeWithClaude(question, ar.answer, config.claudeKey, config.judgePrompt), 3).catch(e => ({ error: e.message })),
       ]);
       await sleep(2000); // intentional throttle
       send("LOG", { level: "debug", msg: `  Q${qi+1}/${ar.chatbot}: gemini=${fmtScore(gScore)} claude=${fmtScore(cScore)}` });
@@ -225,7 +247,35 @@ async function pingTab(tabId) {
 
 // ---------- news fetching ----------
 
+// Shared RSS parser — extracts <item> titles and links from XML text.
+function parseRss(xml, sourceName, limit) {
+  const items = [];
+  const itemRegex = /<item[\s>]([\s\S]*?)<\/item>/gi;
+  let match;
+  while ((match = itemRegex.exec(xml)) !== null && items.length < limit) {
+    const block = match[1];
+    const title = (block.match(/<title>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/) || [])[1]
+               || (block.match(/<title>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/title>/) || [])[2]
+               || "";
+    const link  = (block.match(/<link>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/link>/) || [])[1]
+               || (block.match(/<link>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))<\/link>/) || [])[2]
+               || "";
+    if (title.trim()) {
+      items.push({ title: decodeHtmlEntities(title.trim()), url: link.trim(), source: sourceName });
+    }
+  }
+  return items;
+}
+
+function decodeHtmlEntities(str) {
+  return str
+    .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n));
+}
+
 async function fetchNews(source, count) {
+  // --- Hacker News (existing) ---
   if (source === "hackernews") {
     const url = `https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=${count}`;
     const r = await fetch(url);
@@ -238,6 +288,119 @@ async function fetchNews(source, count) {
       source: "hackernews",
     }));
   }
+
+  // --- Reddit (multiple subreddits) ---
+  const redditMatch = source.match(/^reddit-(.+)$/);
+  if (redditMatch) {
+    const sub = redditMatch[1];
+    const url = `https://www.reddit.com/r/${sub}/hot.json?limit=${Math.min(count + 5, 50)}`;
+    const r = await fetch(url, { headers: { "User-Agent": "ChatbotBenchmark/1.0" } });
+    if (!r.ok) throw new Error(`Reddit r/${sub} fetch failed: ${r.status}`);
+    const j = await r.json();
+    return j.data.children
+      .filter(c => !c.data.stickied && c.data.title)
+      .slice(0, count)
+      .map(c => ({
+        title: decodeHtmlEntities(c.data.title),
+        url: c.data.url || `https://www.reddit.com${c.data.permalink}`,
+        points: c.data.score,
+        source: `reddit-${sub}`,
+      }));
+  }
+
+  // --- BBC RSS (multiple sections) ---
+  const bbcSections = {
+    "bbc-world":         "world",
+    "bbc-politics":      "uk_politics",
+    "bbc-business":      "business",
+    "bbc-technology":    "technology",
+    "bbc-science":       "science_and_environment",
+    "bbc-entertainment": "entertainment_and_arts",
+    "bbc-health":        "health",
+  };
+  if (bbcSections[source]) {
+    const section = bbcSections[source];
+    const url = `https://feeds.bbci.co.uk/news/${section}/rss.xml`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`BBC ${section} fetch failed: ${r.status}`);
+    const xml = await r.text();
+    return parseRss(xml, source, count);
+  }
+
+  // --- Wikipedia Current Events ---
+  if (source === "wikipedia") {
+    // Fetch the current month's Current Events portal
+    const now = new Date();
+    const monthNames = ["January","February","March","April","May","June",
+                        "July","August","September","October","November","December"];
+    const pageTitle = `Portal:Current_events/${monthNames[now.getMonth()]}_${now.getFullYear()}`;
+    const url = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(pageTitle)}&prop=text&format=json&origin=*`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`Wikipedia fetch failed: ${r.status}`);
+    const j = await r.json();
+    const html = j.parse?.text?.["*"] || "";
+    // Extract list items from the HTML — each <li> is a news event
+    const liRegex = /<li>([\s\S]*?)<\/li>/gi;
+    const items = [];
+    let m;
+    while ((m = liRegex.exec(html)) !== null && items.length < count * 3) {
+      // Strip HTML tags to get plain text
+      const text = m[1].replace(/<[^>]+>/g, "").trim();
+      // Skip very short items (sub-bullets, dates, etc.)
+      if (text.length > 30) {
+        const href = (m[1].match(/href="\/wiki\/([^"]+)"/) || [])[1];
+        items.push({
+          title: decodeHtmlEntities(text.slice(0, 200)),
+          url: href ? `https://en.wikipedia.org/wiki/${href}` : "https://en.wikipedia.org/wiki/Portal:Current_events",
+          source: "wikipedia",
+        });
+      }
+    }
+    return items.slice(0, count);
+  }
+
+  // --- NPR ---
+  if (source === "npr") {
+    const r = await fetch("https://feeds.npr.org/1001/rss.xml");
+    if (!r.ok) throw new Error(`NPR fetch failed: ${r.status}`);
+    return parseRss(await r.text(), "npr", count);
+  }
+
+  // --- Al Jazeera ---
+  if (source === "aljazeera") {
+    const r = await fetch("https://www.aljazeera.com/xml/rss/all.xml");
+    if (!r.ok) throw new Error(`Al Jazeera fetch failed: ${r.status}`);
+    return parseRss(await r.text(), "aljazeera", count);
+  }
+
+  // --- Deutsche Welle ---
+  if (source === "dw") {
+    const r = await fetch("https://rss.dw.com/rdf/rss-en-all");
+    if (!r.ok) throw new Error(`DW fetch failed: ${r.status}`);
+    return parseRss(await r.text(), "dw", count);
+  }
+
+  // --- CNBC ---
+  if (source === "cnbc") {
+    const r = await fetch("https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114");
+    if (!r.ok) throw new Error(`CNBC fetch failed: ${r.status}`);
+    return parseRss(await r.text(), "cnbc", count);
+  }
+
+  // --- People Magazine ---
+  if (source === "people") {
+    const r = await fetch("https://people.com/feed/");
+    if (!r.ok) throw new Error(`People fetch failed: ${r.status}`);
+    return parseRss(await r.text(), "people", count);
+  }
+
+  // --- E! News ---
+  if (source === "eonline") {
+    const r = await fetch("https://www.eonline.com/syndication/feeds/rssfeeds/topstories.xml");
+    if (!r.ok) throw new Error(`E! News fetch failed: ${r.status}`);
+    return parseRss(await r.text(), "eonline", count);
+  }
+
   throw new Error(`unknown source: ${source}`);
 }
 
@@ -292,8 +455,8 @@ Output JSON with one key: question (string).`;
   return out.question;
 }
 
-async function judgeWithGemini(question, answer, geminiKey) {
-  const prompt = buildJudgePrompt(question, answer);
+async function judgeWithGemini(question, answer, geminiKey, customPrompt) {
+  const prompt = buildJudgePrompt(question, answer, customPrompt);
   const schema = {
     type: "object",
     properties: {
@@ -308,8 +471,8 @@ async function judgeWithGemini(question, answer, geminiKey) {
 
 // ---------- Claude API: judging ----------
 
-async function judgeWithClaude(question, answer, claudeKey) {
-  const prompt = buildJudgePrompt(question, answer);
+async function judgeWithClaude(question, answer, claudeKey, customPrompt) {
+  const prompt = buildJudgePrompt(question, answer, customPrompt);
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -335,7 +498,12 @@ async function judgeWithClaude(question, answer, claudeKey) {
   return JSON.parse(cleaned);
 }
 
-function buildJudgePrompt(question, answer) {
+function buildJudgePrompt(question, answer, customTemplate) {
+  if (customTemplate) {
+    return customTemplate
+      .replace(/\{\{QUESTION\}\}/g, question)
+      .replace(/\{\{ANSWER\}\}/g, answer);
+  }
   return `You are an expert evaluator of AI chatbot answers.
 
 Score the ANSWER below 0–10 on two dimensions:
@@ -358,6 +526,53 @@ ${answer}
 
 Output JSON only:
 {"completeness": <int 0-10>, "precision": <int 0-10>, "reasoning": "<one or two sentence justification>"}`;
+}
+
+// ---------- re-judge existing answers ----------
+
+async function rejudge(config, existingResults) {
+  const results = existingResults.map(r =>
+    r ? { ...r, answers: r.answers.map(a => ({ ...a })) } : null
+  );
+
+  const judgeTasks = [];
+  let totalAnswers = 0;
+  for (let qi = 0; qi < results.length; qi++) {
+    if (!results[qi]) continue;
+    for (let ci = 0; ci < results[qi].answers.length; ci++) {
+      const ar = results[qi].answers[ci];
+      if (ar.error || !ar.answer) continue;
+      judgeTasks.push({ qi, ci, question: results[qi].question, ar });
+      totalAnswers++;
+    }
+  }
+
+  send("LOG", { level: "info", msg: `re-judging ${totalAnswers} answers across ${results.filter(Boolean).length} questions` });
+  send("PHASE", { phase: "asking", done: 0, total: totalAnswers });
+  let completed = 0;
+
+  await runWithConcurrency(judgeTasks, 2, async (task) => {
+    const { qi, ci, question, ar } = task;
+    const [gScore, cScore] = await Promise.all([
+      withRetry(() => judgeWithGemini(question, ar.answer, config.geminiKey, config.judgePrompt), 3).catch(e => ({ error: e.message })),
+      withRetry(() => judgeWithClaude(question, ar.answer, config.claudeKey, config.judgePrompt), 3).catch(e => ({ error: e.message })),
+    ]);
+    await sleep(2000);
+    send("LOG", { level: "debug", msg: `  Q${qi+1}/${ar.chatbot}: gemini=${fmtScore(gScore)} claude=${fmtScore(cScore)}` });
+    results[qi].answers[ci] = { ...ar, scores: { gemini: gScore, claude: cScore } };
+    completed++;
+    send("PHASE", { phase: "asking", done: completed, total: totalAnswers });
+
+    // Check if this question is fully re-judged
+    const qResult = results[qi];
+    const allDone = qResult.answers.every(a => a.error || !a.answer || a.scores);
+    if (allDone) {
+      send("PARTIAL_RESULT", { index: qi, result: qResult });
+    }
+  });
+
+  send("RESULTS", { results: results.filter(Boolean) });
+  send("LOG", { level: "ok", msg: "re-judging complete" });
 }
 
 // ---------- utils ----------

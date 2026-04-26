@@ -82,26 +82,25 @@
    * Walks backwards to skip intermediate "Searching" or "Thinking" turns.
    */
   function extractLastAnswer() {
-    const allMsgs = document.querySelectorAll(SEL.assistantMsg);
-    if (!allMsgs.length) return "";
+    const allTurns = document.querySelectorAll('.agent-turn');
+    if (!allTurns.length) return "";
 
-    // Loop backwards to find the ACTUAL response, bypassing the "Searching" tool UI
-    for (let i = allMsgs.length - 1; i >= 0; i--) {
-      // The real answer always contains the .markdown.prose container.
-      // Tool messages (like "Searching 5 sites") do not.
-      const markdownBody = allMsgs[i].querySelector('.markdown.prose');
-      if (markdownBody) {
-        return extractText(markdownBody);
-      }
-    }
+    const lastTurn = allTurns[allTurns.length - 1];
 
-    return "";
+    // Wir suchen alle Markdown-Blöcke im letzten Turn und nehmen strikt den LETZTEN.
+    // Das ignoriert eventuelle "Searched 5 sites" Blöcke, die davor gerendert werden.
+    const markdowns = lastTurn.querySelectorAll('.markdown.prose');
+    if (!markdowns.length) return "";
+
+    return extractText(markdowns[markdowns.length - 1]);
   }
 
-  async function ask(question, { maxWaitMs = 180000 } = {}) {
+  async function ask(question, { maxWaitMs = 300000 } = {}) {
     B.log("chatgpt: locating composer…");
-    const composer = await B.waitForSelector(SEL.composer, { timeoutMs: 30000 });
+    const composer = await B.waitForSelector(SEL.composer, { timeoutMs: maxWaitMs });
     if (!composer) throw new Error("chatgpt composer not found");
+
+    const initialMsgCount = document.querySelectorAll('.agent-turn').length;
 
     B.log("chatgpt: typing question…");
     await B.setComposerText(composer, question);
@@ -123,13 +122,21 @@
       composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
     }
 
-    B.log("chatgpt: waiting for assistant message…");
-    const msg = await B.waitForSelector([SEL.assistantMsg], { timeoutMs: maxWaitMs });
-    if (!msg) throw new Error("chatgpt: no assistant message appeared");
+    // Phase 1: Warten, bis überhaupt eine neue Nachricht im DOM erscheint
+    B.log("chatgpt: waiting for message container…");
+    const phase1Deadline = Math.min(tStart + maxWaitMs, tStart + 60000);
+    while (Date.now() < phase1Deadline) {
+      await B.sleep(300);
+      if (document.querySelectorAll('.agent-turn').length > initialMsgCount) {
+        break;
+      }
+    }
 
+    // Phase 2: Deterministische Überwachung mit "Seen"-Flag
     B.log("chatgpt: watching for completion…");
     let lastText = "";
-    let lastChange = Date.now();
+    let lastTextChange = Date.now();
+    let hasSeenActiveUI = false;
 
     while (Date.now() - tStart < maxWaitMs) {
       await B.sleep(400);
@@ -137,21 +144,45 @@
       const text = extractLastAnswer();
       if (text !== lastText) {
         lastText = text;
-        lastChange = Date.now();
+        lastTextChange = Date.now();
       }
 
-      // The ONLY reliable completion signal: the Send/Voice button SVG (#f8aa74)
-      // reappears inside the composer's submit button (class: composer-submit-button-color).
-      // During streaming, the button has id="composer-submit-button" and data-testid="stop-button".
-      // After completion, it is REPLACED by a different button with class "composer-submit-button-color".
-      const sendAppeared = !!document.querySelector('button.composer-submit-button-color use[href*="#f8aa74"]');
+      const textStableFor = Date.now() - lastTextChange;
 
-      const stableFor = Date.now() - lastChange;
+      const stopBtnExists = !!document.querySelector('[data-testid="stop-button"]');
+      const allTurns = document.querySelectorAll('.agent-turn');
+      const lastTurn = allTurns.length > 0 ? allTurns[allTurns.length - 1] : null;
+      const hasStreamingClass = lastTurn ? !!lastTurn.querySelector('.streaming-animation, .result-streaming') : false;
 
-      // Exit: Send button SVG has reappeared and text is stable for 1.5s.
-      if (text.length >= 10 && sendAppeared && stableFor >= 1500) {
+      // 1. Haben wir die aktiven UI-Elemente schon gesehen?
+      if (stopBtnExists || hasStreamingClass) {
+        hasSeenActiveUI = true;
+      }
+
+      // 2. Primärer Exit: Wenn wir die UI gesehen haben, MUSS sie weg sein UND der Text muss ruhen.
+      if (hasSeenActiveUI) {
+        if (!stopBtnExists && !hasStreamingClass && text.length > 0) {
+          // 1.5 Sekunden Puffer, um Tool-Wechsel und Netzwerk-Flackern sicher abzufangen
+          if (textStableFor >= 1500) {
+            const ms = Date.now() - tStart;
+            B.log(`chatgpt: done (UI cleared) after ${ms}ms, ${text.length} chars`);
+            return { answer: text, durationMs: ms };
+          }
+        }
+      }
+      // 3. Fallback Exit: Falls die API extrem schnell war und wir die UI komplett verpasst haben
+      else {
+        if (text.length > 0 && textStableFor >= 4000) {
+          const ms = Date.now() - tStart;
+          B.log(`chatgpt: done (fast API fallback) after ${ms}ms, ${text.length} chars`);
+          return { answer: text, durationMs: ms };
+        }
+      }
+
+      // Safety fallback für eingefrorene Hintergrund-Tabs
+      if (text.length > 10 && textStableFor >= 60000) {
         const ms = Date.now() - tStart;
-        B.log(`chatgpt: done (send btn #f8aa74) after ${ms}ms, ${text.length} chars`);
+        B.log(`chatgpt: stable-fallback after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
     }

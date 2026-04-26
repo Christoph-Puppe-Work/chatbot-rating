@@ -136,7 +136,7 @@ h1 em { font-style: normal; color: var(--accent); }
   color: var(--text-quiet);
   margin-bottom: 8px;
 }
-.field input, .field select {
+.field input, .field select, .field textarea {
   width: 100%;
   background: var(--bg-elev-1);
   border: 1px solid var(--border-2);
@@ -149,9 +149,19 @@ h1 em { font-style: normal; color: var(--accent); }
   backdrop-filter: blur(10px);
   transition: border-color 0.15s, box-shadow 0.15s;
 }
-.field input:focus, .field select:focus {
+.field input:focus, .field select:focus, .field textarea:focus {
   border-color: oklch(0.7 0.18 300 / 0.6);
   box-shadow: 0 0 0 3px oklch(0.7 0.18 300 / 0.15);
+}
+.field select option, .field select optgroup {
+  background: #1a1a2e;
+  color: #e0e0e0;
+}
+.field select optgroup {
+  font-weight: 700;
+  font-style: normal;
+  color: #b0b0c8;
+  padding-top: 6px;
 }
 .field .hint { font-size: 11px; color: var(--text-tertiary); margin-top: 6px; line-height: 1.5; }
 
@@ -563,6 +573,13 @@ td.score .user-badge {
       <div class="hint">console.anthropic.com · claude-opus-4-7 is used</div>
     </div>
   </div>
+  <div class="row" style="margin-top: 16px;">
+    <div class="field">
+      <label>Judge Prompt Template <span style="text-transform:none;letter-spacing:0;font-size:10px;color:var(--text-tertiary)">(use {{QUESTION}} and {{ANSWER}} placeholders)</span></label>
+      <textarea id="judge-prompt" rows="14" style="font-family: var(--mono); font-size: 11px; line-height: 1.55; resize: vertical;"></textarea>
+      <div class="hint">Both judges (Gemini + Claude) receive this prompt. Edit and click "re-judge" to re-score existing answers without re-asking the chatbots.</div>
+    </div>
+  </div>
 </section>
 
 <!-- 02 · source -->
@@ -575,9 +592,40 @@ td.score .user-badge {
     <div class="field">
       <label>Source</label>
       <select id="source">
-        <option value="hackernews">Hacker News (front page)</option>
+        <optgroup label="Tech">
+          <option value="hackernews">Hacker News (front page)</option>
+        </optgroup>
+        <optgroup label="World &amp; Politics">
+          <option value="reddit-worldnews">Reddit · r/worldnews</option>
+          <option value="reddit-politics">Reddit · r/politics</option>
+          <option value="bbc-world">BBC · World</option>
+          <option value="bbc-politics">BBC · UK Politics</option>
+          <option value="aljazeera">Al Jazeera</option>
+          <option value="dw">Deutsche Welle</option>
+          <option value="npr">NPR</option>
+          <option value="wikipedia">Wikipedia Current Events</option>
+        </optgroup>
+        <optgroup label="Economics &amp; Business">
+          <option value="reddit-economics">Reddit · r/economics</option>
+          <option value="bbc-business">BBC · Business</option>
+          <option value="cnbc">CNBC</option>
+        </optgroup>
+        <optgroup label="Science &amp; Tech">
+          <option value="reddit-science">Reddit · r/science</option>
+          <option value="bbc-technology">BBC · Technology</option>
+          <option value="bbc-science">BBC · Science &amp; Environment</option>
+        </optgroup>
+        <optgroup label="Entertainment &amp; Tabloid">
+          <option value="reddit-entertainment">Reddit · r/entertainment</option>
+          <option value="bbc-entertainment">BBC · Entertainment &amp; Arts</option>
+          <option value="people">People Magazine</option>
+          <option value="eonline">E! News</option>
+        </optgroup>
+        <optgroup label="Health">
+          <option value="bbc-health">BBC · Health</option>
+        </optgroup>
       </select>
-      <div class="hint">More sources can be added in background.js → fetchNews()</div>
+      <div class="hint">Headlines are converted to factual questions by Gemini</div>
     </div>
     <div class="field">
       <label>Question count</label>
@@ -627,6 +675,7 @@ td.score .user-badge {
     <button id="btn-export" class="btn ghost hidden">⇣ export csv</button>
     <button id="btn-infographic" class="btn ghost hidden">⇣ export infographic</button>
     <button id="btn-blind-judge" class="btn ghost hidden">▶ blind judge</button>
+    <button id="btn-rejudge" class="btn ghost hidden">⟳ re-judge</button>
   </div>
 
   <div id="phases" class="phases hidden">
