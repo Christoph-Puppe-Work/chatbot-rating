@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chatbot Product Benchmark",
-  "version": "0.9.3",
+  "version": "0.9.8",
   "description": "Benchmark consumer chatbot products (Claude, ChatGPT, Gemini, Grok) on real news questions, judged by Gemini 3.1 Pro + Claude Opus 4.7.",
   "permissions": [
     "storage",

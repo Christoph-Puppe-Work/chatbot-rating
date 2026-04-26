@@ -25,16 +25,81 @@
     ],
     streamingWrapper: 'div[data-is-streaming]',
     markdown: '.standard-markdown, .progressive-markdown',
-    responseBody: '.font-claude-response',
+    responseBody: '.font-claude-response-body',
   };
 
-  function extractAnswer(wrapper) {
-    if (!wrapper) return "";
-    const md = wrapper.querySelector(SEL.markdown);
-    if (md) return (md.innerText || "").trim();
-    const body = wrapper.querySelector(SEL.responseBody);
-    if (body) return (body.innerText || "").trim();
-    return (wrapper.innerText || "").trim();
+  /**
+   * Safely extract text in background tabs.
+   * Includes logic to prevent duplicating text from nested block elements.
+   */
+  function extractText(el) {
+    if (!el) return "";
+
+    const blockTags = ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'PRE', 'BLOCKQUOTE'];
+    const blocks = el.querySelectorAll(blockTags.join(', '));
+
+    if (blocks.length > 0) {
+      // Filter out blocks that are nested inside other matched blocks
+      // to avoid extracting the same text twice.
+      const topLevelBlocks = Array.from(blocks).filter(node => {
+        let parent = node.parentElement;
+        while (parent && parent !== el) {
+          if (blockTags.includes(parent.tagName)) return false;
+          parent = parent.parentElement;
+        }
+        return true;
+      });
+
+      return topLevelBlocks
+        .map(b => (b.textContent || "").trim())
+        .filter(Boolean)
+        .join("\n\n");
+    }
+
+    return (el.innerText || el.textContent || "").trim();
+  }
+
+  /**
+   * Re-query the DOM every iteration to avoid stale React references.
+   * Returns { text, streamingDone }.
+   */
+  function queryResponse() {
+    // 1. Check global streaming state
+    let streamingDone = true;
+    const streamingWrappers = document.querySelectorAll(SEL.streamingWrapper);
+    if (streamingWrappers.length > 0) {
+      // If any wrapper explicitly says it is streaming, we are not done
+      const isStreaming = Array.from(streamingWrappers).some(w => w.getAttribute("data-is-streaming") === "true");
+      streamingDone = !isStreaming;
+    }
+
+    // 2. Because this is a fresh tab, the actual response is simply the 
+    // globally last markdown container. This avoids relative DOM traversal bugs.
+    const mdAll = document.querySelectorAll(SEL.markdown);
+    if (mdAll.length > 0) {
+      const lastMd = mdAll[mdAll.length - 1];
+      const text = extractText(lastMd);
+      if (text) return { text, streamingDone };
+    }
+
+    // 3. Fallback: collect all body paragraphs globally
+    const bodyEls = document.querySelectorAll(SEL.responseBody);
+    if (bodyEls.length > 0) {
+      const parts = Array.from(bodyEls)
+        .map(el => extractText(el))
+        .filter(Boolean);
+      if (parts.length) {
+        return { text: parts.join("\n\n"), streamingDone };
+      }
+    }
+
+    // 4. Ultimate fallback: use the wrapper's text directly
+    if (streamingWrappers.length > 0) {
+      const lastWrapper = streamingWrappers[streamingWrappers.length - 1];
+      return { text: extractText(lastWrapper), streamingDone };
+    }
+
+    return { text: "", streamingDone: false };
   }
 
   async function ask(question, { maxWaitMs = 180000 } = {}) {
@@ -60,31 +125,47 @@
       composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
     }
 
-    // Wait for the streaming wrapper to appear (only one will exist)
     B.log("claude: waiting for streaming wrapper…");
-    let wrapper = await B.waitForSelector([SEL.streamingWrapper], { timeoutMs: 25000 });
-    if (!wrapper) throw new Error("claude: no streaming wrapper appeared");
+    const appeared = await B.waitForSelector([SEL.streamingWrapper], { timeoutMs: 25000 });
+    if (!appeared) throw new Error("claude: no streaming wrapper appeared");
 
     B.log("claude: watching for completion…");
     let lastText = "";
     let lastChange = Date.now();
+    let streamingEndedAt = null;
+
     while (Date.now() - tStart < maxWaitMs) {
       await B.sleep(400);
-      const text = extractAnswer(wrapper);
+      const { text, streamingDone } = queryResponse();
+
       if (text !== lastText) {
         lastText = text;
         lastChange = Date.now();
       }
-      const streaming = wrapper.getAttribute("data-is-streaming");
-      const streamingDone = streaming === "false";
+
+      if (streamingDone && streamingEndedAt === null) {
+        streamingEndedAt = Date.now();
+      }
+      if (!streamingDone) {
+        streamingEndedAt = null;
+      }
+
       const stableFor = Date.now() - lastChange;
-      if (text.length >= 100 && (streamingDone || stableFor >= 4000)) {
+
+      if (text.length >= 10 && streamingDone && stableFor >= 2000) {
         const ms = Date.now() - tStart;
-        B.log(`claude: ${streamingDone ? "streaming-done" : "stable"} after ${ms}ms, ${text.length} chars`);
+        B.log(`claude: streaming-done+stable after ${ms}ms, ${text.length} chars`);
+        return { answer: text, durationMs: ms };
+      }
+
+      if (text.length >= 10 && stableFor >= 8000) {
+        const ms = Date.now() - tStart;
+        B.log(`claude: stable-fallback after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
     }
-    if (lastText.length < 30) throw new Error(`claude: timeout, response too short (${lastText.length} chars)`);
+
+    if (lastText.length < 10) throw new Error(`claude: timeout, response too short (${lastText.length} chars)`);
     const ms = Date.now() - tStart;
     B.log(`claude: timeout after ${ms}ms, ${lastText.length} chars`);
     return { answer: lastText, durationMs: ms };
