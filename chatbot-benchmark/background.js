@@ -493,7 +493,7 @@ async function judgeWithClaude(question, answer, claudeKey, customPrompt) {
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: 800,
-      tools: [{ type: "web_search_20260209", name: "web_search" }],
+      tools: [{ type: "web_search" }],
       messages: [{ role: "user", content: prompt + "\n\nReply with ONLY a JSON object, no prose, no markdown fences." }],
     }),
   });

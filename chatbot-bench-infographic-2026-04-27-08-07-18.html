@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chatbot Benchmark — 2026-04-27</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<style>
+:root {
+  --bg-deep:        oklch(0.13 0.02 280);
+  --bg-elev-1:      oklch(0.95 0.005 280 / 0.04);
+  --bg-elev-2:      oklch(0.95 0.005 280 / 0.06);
+  --bg-elev-3:      oklch(0.95 0.005 280 / 0.08);
+  --border-1:       oklch(0.95 0.005 280 / 0.06);
+  --border-2:       oklch(0.95 0.005 280 / 0.10);
+  --text-primary:   oklch(0.95 0.005 280);
+  --text-secondary: oklch(0.75 0.02 280);
+  --text-tertiary:  oklch(0.65 0.02 280);
+  --text-quiet:     oklch(0.55 0.02 280);
+  --accent:         oklch(0.7  0.18 300);
+  --accent-soft:    oklch(0.7  0.18 300 / 0.15);
+  --accent-glow:    oklch(0.7  0.18 300 / 0.4);
+  --sans:           'Inter', system-ui, sans-serif;
+  --mono:           'JetBrains Mono', ui-monospace, monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body {
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.55;
+  min-height: 100vh;
+}
+body { position: relative; overflow-x: hidden; padding: 56px 32px 80px; }
+
+/* Aurora atmosphere — required by the skill, no exceptions */
+.aurora-1, .aurora-2, .noise {
+  position: fixed; pointer-events: none; z-index: 0;
+}
+.aurora-1 {
+  width: 600px; height: 600px; top: -200px; left: -100px;
+  border-radius: 50%;
+  background: radial-gradient(circle, oklch(0.4 0.18 300 / 0.5), transparent 70%);
+  filter: blur(60px);
+}
+.aurora-2 {
+  width: 700px; height: 700px; bottom: -300px; right: -200px;
+  border-radius: 50%;
+  background: radial-gradient(circle, oklch(0.4 0.16 240 / 0.4), transparent 70%);
+  filter: blur(80px);
+}
+.noise {
+  inset: 0; opacity: 0.03;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22><filter id=%22n%22><feTurbulence baseFrequency=%220.9%22/></filter><rect width=%22100%22 height=%22100%22 filter=%22url(%23n)%22/></svg>");
+}
+
+.wrap { position: relative; z-index: 1; max-width: 1100px; margin: 0 auto; }
+
+::selection { background: oklch(0.7 0.18 300 / 0.35); color: var(--text-primary); }
+
+/* mono nano labels */
+.kicker {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-quiet);
+}
+.kicker-accent { color: var(--accent); }
+
+/* Hero */
+.hero {
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-1);
+  backdrop-filter: blur(20px);
+  border-radius: 16px;
+  padding: 40px 44px;
+  margin-bottom: 24px;
+}
+.hero-kicker { margin-bottom: 28px; }
+.hero h1 {
+  font-size: 48px;
+  font-weight: 700;
+  letter-spacing: -1px;
+  line-height: 1.05;
+  margin-bottom: 20px;
+}
+.hero h1 .accent { color: var(--accent); }
+.lede {
+  font-size: 15px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  max-width: 680px;
+}
+.lede em { color: var(--text-primary); font-style: normal; font-weight: 500; }
+.meta-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 24px;
+  margin-top: 36px;
+  padding-top: 28px;
+  border-top: 1px solid var(--border-1);
+}
+.meta-item .meta-label {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-quiet);
+  margin-bottom: 8px;
+}
+.meta-item .meta-val {
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+}
+.meta-item.winner .meta-val { color: var(--accent); }
+
+/* Sections */
+.section {
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-1);
+  backdrop-filter: blur(20px);
+  border-radius: 12px;
+  padding: 32px 36px;
+  margin-bottom: 24px;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--border-1);
+}
+.section-icon {
+  color: var(--accent);
+  font-size: 16px;
+}
+.section-num {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  color: var(--text-quiet);
+}
+.section-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.section-aside {
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-quiet);
+}
+
+/* Ranking */
+.rank-row {
+  display: grid;
+  grid-template-columns: 56px 1fr;
+  gap: 18px;
+  align-items: center;
+  margin-bottom: 22px;
+}
+.rank-row:last-child { margin-bottom: 0; }
+.rank-pos {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 500;
+  color: var(--text-quiet);
+  letter-spacing: -1px;
+}
+.rank-bar-wrap { display: flex; flex-direction: column; gap: 8px; }
+.rank-name {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.rank-track {
+  height: 28px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-2);
+  border-radius: 8px;
+  overflow: hidden;
+  backdrop-filter: blur(10px);
+}
+.rank-fill {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 14px;
+  border-radius: 7px;
+  transition: width .6s ease;
+}
+.rank-val {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--bg-deep);
+}
+.rank-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  color: var(--text-tertiary);
+}
+.rank-meta-err { color: oklch(0.7 0.16 30); }
+.rank-meta-you { color: var(--accent); }
+
+/* Speed */
+.speed-row {
+  display: grid;
+  grid-template-columns: 100px 1fr 70px;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+  font-size: 13px;
+}
+.speed-row:last-child { margin-bottom: 0; }
+.speed-name {
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+.speed-track {
+  height: 8px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.speed-fill {
+  height: 100%;
+  border-radius: 3px;
+  opacity: 0.85;
+  transition: width .6s ease;
+}
+.speed-val {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: right;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+/* Heatmap */
+.heat-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 4px 4px;
+}
+.heat-table th {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 8px 4px 14px;
+  color: var(--text-quiet);
+  font-weight: 500;
+}
+.heat-table th:first-child { text-align: left; }
+.heat-q {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  padding: 10px 14px 10px 0 !important;
+  max-width: 480px;
+  border-bottom: 1px solid var(--border-1);
+}
+.heat-q-num {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-quiet);
+  margin-right: 8px;
+  letter-spacing: 1px;
+}
+.heat-cell {
+  text-align: center;
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 8px;
+  padding: 10px 4px;
+  min-width: 70px;
+  position: relative;
+}
+.heat-cell.empty {
+  border: 1px dashed var(--border-2);
+  background: transparent !important;
+}
+.heat-badge {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.5px;
+  padding: 1px 5px;
+  margin-left: 5px;
+  background: var(--bg-deep);
+  color: var(--text-primary);
+  border-radius: 3px;
+  vertical-align: 1px;
+  font-weight: 500;
+}
+.legend {
+  display: flex;
+  gap: 18px;
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-1);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--text-tertiary);
+  align-items: center;
+  flex-wrap: wrap;
+}
+.legend-swatch {
+  display: inline-block;
+  width: 14px; height: 14px;
+  border-radius: 3px;
+  vertical-align: middle;
+  margin-right: 7px;
+}
+
+/* Footer */
+footer {
+  margin-top: 48px;
+  padding: 32px 36px;
+  background: var(--bg-elev-1);
+  border: 1px solid var(--border-1);
+  backdrop-filter: blur(20px);
+  border-radius: 12px;
+  font-size: 12px;
+  color: var(--text-tertiary);
+  line-height: 1.7;
+}
+footer p { margin-bottom: 12px; max-width: 720px; }
+footer p:last-child { margin-bottom: 0; }
+footer strong {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+footer .footer-stamp {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--text-quiet);
+  text-transform: uppercase;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-1);
+}
+footer a { color: var(--accent); text-decoration: none; }
+
+@media print {
+  body { padding: 20px; }
+  .aurora-1, .aurora-2 { display: none; }
+  .section, .hero, footer { break-inside: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="aurora-1"></div>
+<div class="aurora-2"></div>
+<div class="noise"></div>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker hero-kicker">◐ &nbsp; CONSUMER CHATBOT PRODUCT BENCHMARK</div>
+  <h1>20 questions, 4 chatbots,<br><span class="accent">one ranking.</span></h1>
+  <p class="lede">Real questions sourced from <em>Hacker News front page</em>, sent through the consumer chat UIs of Claude, ChatGPT, Gemini and Grok. Answers judged by Gemini 3.1 Pro and Claude Opus 4.7 — with optional human override.</p>
+  <div class="meta-row">
+    <div class="meta-item"><div class="meta-label">run date</div><div class="meta-val">2026-04-27</div></div>
+    <div class="meta-item"><div class="meta-label">questions</div><div class="meta-val">20</div></div>
+    <div class="meta-item winner"><div class="meta-label">winner</div><div class="meta-val">Grok</div></div>
+    <div class="meta-item"><div class="meta-label">winning score</div><div class="meta-val">8.46</div></div>
+  </div>
+</header>
+
+<section class="section">
+  <div class="section-head">
+    <span class="section-icon">◬</span>
+    <span class="section-num">01 — RANKING</span>
+    <span class="section-title">Quality</span>
+    <span class="section-aside">avg(completeness, precision) · 0–10</span>
+  </div>
+  
+      <div class="rank-row">
+        <div class="rank-pos">01</div>
+        <div class="rank-bar-wrap">
+          <div class="rank-name" style="color:oklch(0.76 0.14 330)">Grok</div>
+          <div class="rank-track">
+            <div class="rank-fill" style="width:84.625%; background:oklch(0.76 0.14 330)">
+              <span class="rank-val">8.46</span>
+            </div>
+          </div>
+          <div class="rank-meta">
+            <span>20 answered</span>
+            
+            
+            <span>44.7s median</span>
+            <span>4458 chars median</span>
+          </div>
+        </div>
+      </div>
+      <div class="rank-row">
+        <div class="rank-pos">02</div>
+        <div class="rank-bar-wrap">
+          <div class="rank-name" style="color:oklch(0.72 0.16 305)">Claude</div>
+          <div class="rank-track">
+            <div class="rank-fill" style="width:81.75000000000001%; background:oklch(0.72 0.16 305)">
+              <span class="rank-val">8.18</span>
+            </div>
+          </div>
+          <div class="rank-meta">
+            <span>20 answered</span>
+            
+            
+            <span>19.1s median</span>
+            <span>2753 chars median</span>
+          </div>
+        </div>
+      </div>
+      <div class="rank-row">
+        <div class="rank-pos">03</div>
+        <div class="rank-bar-wrap">
+          <div class="rank-name" style="color:oklch(0.74 0.14 280)">Gemini</div>
+          <div class="rank-track">
+            <div class="rank-fill" style="width:75.125%; background:oklch(0.74 0.14 280)">
+              <span class="rank-val">7.51</span>
+            </div>
+          </div>
+          <div class="rank-meta">
+            <span>20 answered</span>
+            
+            
+            <span>97.0s median</span>
+            <span>2872 chars median</span>
+          </div>
+        </div>
+      </div>
+      <div class="rank-row">
+        <div class="rank-pos">04</div>
+        <div class="rank-bar-wrap">
+          <div class="rank-name" style="color:oklch(0.70 0.16 240)">ChatGPT</div>
+          <div class="rank-track">
+            <div class="rank-fill" style="width:16.818181818181817%; background:oklch(0.70 0.16 240)">
+              <span class="rank-val">1.68</span>
+            </div>
+          </div>
+          <div class="rank-meta">
+            <span>11 answered</span>
+            <span class="rank-meta-err">9 failed</span>
+            
+            <span>301.9s median</span>
+            <span>167 chars median</span>
+          </div>
+        </div>
+      </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <span class="section-icon">⌕</span>
+    <span class="section-num">02 — SPEED</span>
+    <span class="section-title">Median response time</span>
+    <span class="section-aside">submit → stream complete</span>
+  </div>
+  
+        <div class="speed-row">
+          <span class="speed-name" style="color:oklch(0.72 0.16 305)">Claude</span>
+          <div class="speed-track"><div class="speed-fill" style="width:6.330688163638411%; background:oklch(0.72 0.16 305)"></div></div>
+          <span class="speed-val">19.1s</span>
+        </div>
+        <div class="speed-row">
+          <span class="speed-name" style="color:oklch(0.76 0.14 330)">Grok</span>
+          <div class="speed-track"><div class="speed-fill" style="width:14.807871919028662%; background:oklch(0.76 0.14 330)"></div></div>
+          <span class="speed-val">44.7s</span>
+        </div>
+        <div class="speed-row">
+          <span class="speed-name" style="color:oklch(0.74 0.14 280)">Gemini</span>
+          <div class="speed-track"><div class="speed-fill" style="width:32.12307987838402%; background:oklch(0.74 0.14 280)"></div></div>
+          <span class="speed-val">97.0s</span>
+        </div>
+        <div class="speed-row">
+          <span class="speed-name" style="color:oklch(0.70 0.16 240)">ChatGPT</span>
+          <div class="speed-track"><div class="speed-fill" style="width:100%; background:oklch(0.70 0.16 240)"></div></div>
+          <span class="speed-val">301.9s</span>
+        </div>
+</section>
+
+<section class="section">
+  <div class="section-head">
+    <span class="section-icon">▣</span>
+    <span class="section-num">03 — DETAIL</span>
+    <span class="section-title">Per-question heatmap</span>
+    <span class="section-aside">YOU = your override</span>
+  </div>
+  <table class="heat-table">
+    <thead>
+      <tr>
+        <th>Question</th>
+        <th style="color:oklch(0.72 0.16 305)">Claude</th><th style="color:oklch(0.70 0.16 240)">ChatGPT</th><th style="color:oklch(0.74 0.14 280)">Gemini</th><th style="color:oklch(0.76 0.14 330)">Grok</th>
+      </tr>
+    </thead>
+    <tbody><tr><td class="heat-q"><span class="heat-q-num">01</span> Who purchased Friendster for $30,000, and what are their specific plans for the platform moving forward?</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 8.8">8.8</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.50 0.10 300 / 0.30); color:oklch(0.95 0.005 280)" title="gemini: 4.8">4.8</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.3">9.3</td></tr><tr><td class="heat-q"><span class="heat-q-num">02</span> According to the viral incident shared by @lifeof_jer, what specific technical oversight allowed an AI agent t…</td><td class="heat-cell" style="background:oklch(0.60 0.13 300 / 0.45); color:oklch(0.95 0.005 280)" title="claude: 6.8">6.8</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.50 0.10 300 / 0.30); color:oklch(0.95 0.005 280)" title="gemini: 4.0">4.0</td><td class="heat-cell" style="background:oklch(0.68 0.16 300 / 0.65); color:oklch(0.13 0.02 280)" title="grok: 7.0">7.0</td></tr><tr><td class="heat-q"><span class="heat-q-num">03</span> What are the main practical and philosophical arguments in the tech industry for using AI to augment human cog…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 8.8">8.8</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.3">9.3</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.3">9.3</td></tr><tr><td class="heat-q"><span class="heat-q-num">04</span> In which specific marathon event did Sabastian Sawe become the first athlete to run a sub-two-hour marathon in…</td><td class="heat-cell" style="background:oklch(0.60 0.13 300 / 0.45); color:oklch(0.95 0.005 280)" title="claude: 6.0">6.0</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.60 0.13 300 / 0.45); color:oklch(0.95 0.005 280)" title="gemini: 6.3">6.3</td><td class="heat-cell" style="background:oklch(0.60 0.13 300 / 0.45); color:oklch(0.95 0.005 280)" title="grok: 6.5">6.5</td></tr><tr><td class="heat-q"><span class="heat-q-num">05</span> According to OpenAI, what specific limitations or issues led them to conclude that SWE-bench Verified is no lo…</td><td class="heat-cell" style="background:oklch(0.60 0.13 300 / 0.45); color:oklch(0.95 0.005 280)" title="claude: 6.5">6.5</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.50 0.10 300 / 0.30); color:oklch(0.95 0.005 280)" title="gemini: 5.0">5.0</td><td class="heat-cell" style="background:oklch(0.50 0.10 300 / 0.30); color:oklch(0.95 0.005 280)" title="grok: 5.0">5.0</td></tr><tr><td class="heat-q"><span class="heat-q-num">06</span> In the context of software documentation, how are &#39;self-updating screenshots&#39; typically implemented using auto…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 8.8">8.8</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.0">9.0</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.3">9.3</td></tr><tr><td class="heat-q"><span class="heat-q-num">07</span> What is the &#39;Fast16&#39; cyber espionage tool referenced in the Shadow Brokers leaks, and what specific high-preci…</td><td class="heat-cell" style="background:oklch(0.68 0.16 300 / 0.65); color:oklch(0.13 0.02 280)" title="claude: 7.5">7.5</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.60 0.13 300 / 0.45); color:oklch(0.95 0.005 280)" title="gemini: 6.8">6.8</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.0">9.0</td></tr><tr><td class="heat-q"><span class="heat-q-num">08</span> What are the essential materials and step-by-step processes involved in creating a functional DIY printed circ…</td><td class="heat-cell" style="background:oklch(0.68 0.16 300 / 0.65); color:oklch(0.13 0.02 280)" title="claude: 7.3">7.3</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.0">9.0</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.3">9.3</td></tr><tr><td class="heat-q"><span class="heat-q-num">09</span> What are the primary environmental and human-driven factors driving the dramatic population decline of Western…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 9.3">9.3</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="chatgpt: 9.3">9.3</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.0">9.0</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.3">9.3</td></tr><tr><td class="heat-q"><span class="heat-q-num">10</span> What is a flip-disc display, and how does the underlying electromagnetic mechanism work to create visible imag…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 9.0">9.0</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.8">9.8</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.5">9.5</td></tr><tr><td class="heat-q"><span class="heat-q-num">11</span> What are the three specific constraints that developer Jordan Lord outlines as prerequisites before he builds …</td><td class="heat-cell" style="background:oklch(0.68 0.16 300 / 0.65); color:oklch(0.13 0.02 280)" title="claude: 7.0">7.0</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 10.0">10.0</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.0">9.0</td></tr><tr><td class="heat-q"><span class="heat-q-num">12</span> What are the core topics typically covered in an engineering thermodynamics textbook, and how does its practic…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 9.3">9.3</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.5">9.5</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.8">9.8</td></tr><tr><td class="heat-q"><span class="heat-q-num">13</span> What are some key examples of anatomical &quot;quirks&quot; or suboptimal designs in the human body that evolutionary de…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 8.5">8.5</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.3">9.3</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.3">9.3</td></tr><tr><td class="heat-q"><span class="heat-q-num">14</span> What is &#39;The Visible Zorker&#39; project, and how does it help users understand the internal mechanics and ZIL sou…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 9.0">9.0</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.68 0.16 300 / 0.65); color:oklch(0.13 0.02 280)" title="gemini: 7.3">7.3</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.3">9.3</td></tr><tr><td class="heat-q"><span class="heat-q-num">15</span> What specific aspects of playing Magic: The Gathering, such as repetitive card vocabulary, rule mechanics, and…</td><td class="heat-cell" style="background:oklch(0.68 0.16 300 / 0.65); color:oklch(0.13 0.02 280)" title="claude: 8.0">8.0</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.68 0.16 300 / 0.65); color:oklch(0.13 0.02 280)" title="gemini: 8.0">8.0</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 8.8">8.8</td></tr><tr><td class="heat-q"><span class="heat-q-num">16</span> What is the TurboQuant algorithm, and what core mathematical or architectural mechanisms does it use to achiev…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 9.0">9.0</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="gemini: 2.0">2.0</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 8.8">8.8</td></tr><tr><td class="heat-q"><span class="heat-q-num">17</span> In Rust programming, how can using `Box&lt;T&gt;` to allocate data on the heap result in an overall reduction of a p…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 9.0">9.0</td><td class="heat-cell empty" title="no answer">—</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.5">9.5</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.0">9.0</td></tr><tr><td class="heat-q"><span class="heat-q-num">18</span> In product design discussions, such as Arun Venkatesan&#39;s essay &#39;When the cheap one is the cool one&#39;, what are …</td><td class="heat-cell" style="background:oklch(0.68 0.16 300 / 0.65); color:oklch(0.13 0.02 280)" title="claude: 7.0">7.0</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.50 0.10 300 / 0.30); color:oklch(0.95 0.005 280)" title="gemini: 4.3">4.3</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="grok: 3.0">3.0</td></tr><tr><td class="heat-q"><span class="heat-q-num">19</span> Four decades after the 1986 nuclear disaster, how have wildlife populations and ecosystems in the Chernobyl Ex…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 9.0">9.0</td><td class="heat-cell" style="background:oklch(0.40 0.08 300 / 0.20); color:oklch(0.95 0.005 280)" title="chatgpt: 0.0">0.0</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 8.8">8.8</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.5">9.5</td></tr><tr><td class="heat-q"><span class="heat-q-num">20</span> What is the Prompt API introduced for Google Chrome, and how does it enable developers to utilize on-device AI…</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="claude: 9.3">9.3</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="chatgpt: 9.3">9.3</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="gemini: 9.0">9.0</td><td class="heat-cell" style="background:oklch(0.72 0.18 300 / 0.85); color:oklch(0.13 0.02 280)" title="grok: 9.8">9.8</td></tr></tbody>
+  </table>
+  <div class="legend">
+    <span><span class="legend-swatch" style="background:oklch(0.72 0.18 300 / 0.85)"></span>≥ 8.5</span>
+    <span><span class="legend-swatch" style="background:oklch(0.68 0.16 300 / 0.65)"></span>7–8.4</span>
+    <span><span class="legend-swatch" style="background:oklch(0.60 0.13 300 / 0.45)"></span>5.5–6.9</span>
+    <span><span class="legend-swatch" style="background:oklch(0.50 0.10 300 / 0.30)"></span>4–5.4</span>
+    <span><span class="legend-swatch" style="background:oklch(0.40 0.08 300 / 0.20)"></span>&lt; 4</span>
+    <span><span class="legend-swatch" style="background:transparent; border: 1px dashed var(--border-2)"></span>no answer</span>
+  </div>
+</section>
+
+<footer>
+  <p><strong>Method.</strong> Each question was generated from a Hacker News headline by Gemini 3.1 Pro, then sent through the actual consumer chat interfaces — not the API — to capture real product behaviour with system prompts, tools and web search included. Each answer was scored 0–10 on completeness and precision by two independent LLM judges (Gemini 3.1 Pro and Claude Opus 4.7); per-cell scores are the mean of both judges' average score, unless overridden by a human rating.</p>
+  <p><strong>Caveats.</strong> N=20 is too small for strong statistical claims; consider this a directional snapshot. Speed includes streaming time, not just first-token latency. Quality scores reflect tech-news comprehension specifically, not coding, math, or other capability dimensions.</p>
+  <div class="footer-stamp">Generated by <a href="#">Chatbot Product Benchmark v0.6.0</a> · 4/27/2026, 10:07:18 AM</div>
+</footer>
+
+</div>
+</body>
+</html>
