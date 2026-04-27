@@ -87,7 +87,7 @@ async function runBenchmark(config) {
     let qDone = 0;
     await Promise.all(articles.map(async (a, i) => {
       try {
-        const q = await withRetry(() => generateQuestion(a, config.geminiKey), 3);
+        const q = await withRetry(() => generateQuestion(a, config.geminiKey, config.questionPrompt), 3);
         questions[i] = { article: a, question: q };
         send("LOG", { level: "debug", msg: `Q${i+1}: ${q.slice(0, 80)}…` });
       } catch (e) {
@@ -100,6 +100,13 @@ async function runBenchmark(config) {
     }));
     validQuestions = questions.filter(q => q.question);
   }
+
+  if (config.systemMessage) {
+    for (let q of validQuestions) {
+      q.question = config.systemMessage + "\n\n" + q.question;
+    }
+  }
+
   if (validQuestions.length === 0) throw new Error("no questions generated");
   send("QUESTIONS_READY", { questions: validQuestions });
 
@@ -432,8 +439,10 @@ async function geminiCall(apiKey, prompt, schema) {
   return JSON.parse(cleaned);
 }
 
-async function generateQuestion(article, geminiKey) {
-  const prompt = `You are generating benchmark questions for testing AI chatbots on tech news comprehension.
+async function generateQuestion(article, geminiKey, customPrompt) {
+  const prompt = customPrompt
+    ? customPrompt.replace(/\{\{HEADLINE\}\}/g, article.title).replace(/\{\{URL\}\}/g, article.url)
+    : `You are generating benchmark questions for testing AI chatbots on tech news comprehension.
 
 Given a news headline, produce ONE specific factual question that:
 1. A knowledgeable reader would actually want answered after seeing the headline

@@ -1,5 +1,11 @@
 // cs-chatgpt.js — adapter for chatgpt.com
 // Fresh-tab strategy: one question per tab, DOM starts empty.
+//
+// Completion detection uses a targeted MutationObserver on the specific
+// .markdown container of the latest assistant message. We watch ONLY
+// attributeFilter: ['class'] — ignoring the thousands of text-token
+// mutations during streaming. When the 'streaming-animation' class is
+// removed, the stream is done.
 
 (function () {
   const B = window.__BENCH__;
@@ -13,94 +19,86 @@
       'div[contenteditable="true"]',
     ],
     sendBtn: [
-      'button[data-testid="send-button"]',
       '#composer-submit-button[data-testid="send-button"]',
+      'button[data-testid="send-button"]',
       '#composer-submit-button',
     ],
-    assistantMsg: 'div[data-message-author-role="assistant"]',
-    streamingCursor: '.result-streaming',
+    assistantMsg: '[data-message-author-role="assistant"]',
+    markdown: '.markdown',
+    streamingClass: 'streaming-animation',
   };
 
   /**
-   * Safely extract text in background tabs.
-   * Includes logic to prevent duplicating text from nested block elements.
+   * Wait for the final answer using a targeted MutationObserver.
+   *
+   * Instead of polling the entire DOM or watching document.body (which fires
+   * thousands of times per second during token streaming), we:
+   *   1. Find the latest assistant message container
+   *   2. Find its .markdown child
+   *   3. If streaming-animation is already absent → done immediately
+   *   4. Otherwise, observe ONLY that single element's class attribute
+   *   5. Resolve the moment streaming-animation is removed
+   *
+   * This is hyper-efficient: zero overhead during streaming, instant detection
+   * of completion, and no race conditions with fast/short responses.
    */
-  /**
-   * Recursive DOM walker for background tabs.
-   * Extracts text natively and processes blocks/lists without dropping content.
-   */
-  function extractTextNode(node) {
-    if (!node) return "";
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
-    if (node.nodeType !== Node.ELEMENT_NODE) return "";
+  function waitForFinalAnswer(maxWaitMs) {
+    return new Promise((resolve, reject) => {
+      const assistantMessages = document.querySelectorAll(SEL.assistantMsg);
+      if (assistantMessages.length === 0) {
+        return reject(new Error("No assistant messages found on the page."));
+      }
 
-    // Explicitly ignore ChatGPT's inline citation pills (so they don't pollute the text)
-    if (node.hasAttribute && node.hasAttribute('data-testid') && node.getAttribute('data-testid') === 'webpage-citation-pill') {
-      return "";
-    }
+      const latestMessage = assistantMessages[assistantMessages.length - 1];
+      const markdownContainer = latestMessage.querySelector(SEL.markdown);
 
-    const tag = node.tagName.toUpperCase();
+      if (!markdownContainer) {
+        return reject(new Error("Markdown container not found inside the latest message."));
+      }
 
-    // Ignore UI elements like "Copy" buttons, icons, SVGs
-    if (tag === 'BUTTON' || tag === 'SVG' || tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT') {
-      return "";
-    }
+      // Synchronous check: has streaming already finished?
+      if (!markdownContainer.classList.contains(SEL.streamingClass)) {
+        return resolve(markdownContainer.textContent.trim());
+      }
 
-    const isBlock = ['P', 'DIV', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LI', 'PRE', 'BLOCKQUOTE', 'TR', 'UL', 'OL', 'TABLE', 'FIGURE'].includes(tag);
+      // Targeted observer: watch ONLY the class attribute of this specific node.
+      // We don't care about text-token childList mutations — just the class flip.
+      const observer = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+          if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
+            if (!markdownContainer.classList.contains(SEL.streamingClass)) {
+              observer.disconnect();
+              clearTimeout(timer);
+              resolve(markdownContainer.textContent.trim());
+            }
+          }
+        }
+      });
 
-    let text = "";
-    for (let i = 0; i < node.childNodes.length; i++) {
-      text += extractTextNode(node.childNodes[i]);
-    }
+      observer.observe(markdownContainer, {
+        attributes: true,
+        attributeFilter: ['class'],
+        childList: false,
+        subtree: false,
+      });
 
-    // Tab between table cells
-    if (tag === 'TD' || tag === 'TH') {
-      text += " \t ";
-    }
-
-    // Wrap blocks in newlines
-    if (isBlock) {
-      text = "\n\n" + text + "\n\n";
-    }
-
-    return text;
-  }
-
-  function extractText(el) {
-    if (!el) return "";
-    let raw = extractTextNode(el);
-    return raw
-      .replace(/[ \t]+/g, ' ')         // Collapse horizontal whitespace
-      .replace(/\n[ \t]+/g, '\n')      // Remove leading spaces per line
-      .replace(/[ \t]+\n/g, '\n')      // Remove trailing spaces per line
-      .replace(/\n{3,}/g, '\n\n')      // Reduce 3+ newlines to 2
-      .trim();
-  }
-
-  /**
-   * Find the LAST assistant message's markdown body text.
-   * Walks backwards to skip intermediate "Searching" or "Thinking" turns.
-   */
-  function extractLastAnswer() {
-    const allTurns = document.querySelectorAll('.agent-turn');
-    if (!allTurns.length) return "";
-
-    const lastTurn = allTurns[allTurns.length - 1];
-
-    // Wir suchen alle Markdown-Blöcke im letzten Turn und nehmen strikt den LETZTEN.
-    // Das ignoriert eventuelle "Searched 5 sites" Blöcke, die davor gerendert werden.
-    const markdowns = lastTurn.querySelectorAll('.markdown.prose');
-    if (!markdowns.length) return "";
-
-    return extractText(markdowns[markdowns.length - 1]);
+      // Safety timeout — in case the class never flips (network error, etc.)
+      const timer = setTimeout(() => {
+        observer.disconnect();
+        const fallbackText = markdownContainer.textContent.trim();
+        if (fallbackText.length > 10) {
+          resolve(fallbackText);
+        } else {
+          reject(new Error(`chatgpt: timeout waiting for stream completion (${fallbackText.length} chars)`));
+        }
+      }, maxWaitMs);
+    });
   }
 
   async function ask(question, { maxWaitMs = 300000 } = {}) {
     B.log("chatgpt: locating composer…");
     const composer = await B.waitForSelector(SEL.composer, { timeoutMs: maxWaitMs });
     if (!composer) throw new Error("chatgpt composer not found");
-
-    const initialMsgCount = document.querySelectorAll('.agent-turn').length;
 
     B.log("chatgpt: typing question…");
     await B.setComposerText(composer, question);
@@ -109,88 +107,46 @@
     B.log("chatgpt: submitting…");
     const tStart = Date.now();
     let sendBtn = B.pickOne(SEL.sendBtn);
-
     while (sendBtn && (sendBtn.disabled || sendBtn.getAttribute("aria-disabled") === "true") && Date.now() - tStart < 5000) {
       await B.sleep(150);
       sendBtn = B.pickOne(SEL.sendBtn);
     }
-
-    if (sendBtn && !sendBtn.disabled) {
+    if (sendBtn) {
       B.realClick(sendBtn);
     } else {
       composer.focus();
       composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
     }
 
-    // Phase 1: Warten, bis überhaupt eine neue Nachricht im DOM erscheint
-    B.log("chatgpt: waiting for message container…");
-    const phase1Deadline = Math.min(tStart + maxWaitMs, tStart + 60000);
-    while (Date.now() < phase1Deadline) {
-      await B.sleep(300);
-      if (document.querySelectorAll('.agent-turn').length > initialMsgCount) {
-        break;
-      }
+    // Wait for the assistant message to appear in the DOM
+    B.log("chatgpt: waiting for assistant message…");
+    const msg = await B.waitForSelector([SEL.assistantMsg], {
+      timeoutMs: Math.max(0, maxWaitMs - (Date.now() - tStart)),
+    });
+    if (!msg) throw new Error("chatgpt: no assistant message appeared");
+
+    // Wait for the .markdown container to appear inside the message
+    B.log("chatgpt: waiting for markdown container…");
+    let markdownEl = null;
+    const mdDeadline = tStart + maxWaitMs;
+    while (Date.now() < mdDeadline) {
+      // Re-query the latest assistant message (in case a new one appeared)
+      const allMsgs = document.querySelectorAll(SEL.assistantMsg);
+      const latest = allMsgs[allMsgs.length - 1];
+      markdownEl = latest?.querySelector(SEL.markdown);
+      if (markdownEl) break;
+      await B.sleep(200);
     }
+    if (!markdownEl) throw new Error("chatgpt: .markdown container never appeared");
 
-    // Phase 2: Deterministische Überwachung mit "Seen"-Flag
-    B.log("chatgpt: watching for completion…");
-    let lastText = "";
-    let lastTextChange = Date.now();
-    let hasSeenActiveUI = false;
+    // Use the targeted MutationObserver to wait for streaming completion
+    B.log("chatgpt: observing class attribute for stream completion…");
+    const remainingMs = Math.max(0, maxWaitMs - (Date.now() - tStart));
+    const text = await waitForFinalAnswer(remainingMs);
 
-    while (Date.now() - tStart < maxWaitMs) {
-      await B.sleep(400);
-
-      const text = extractLastAnswer();
-      if (text !== lastText) {
-        lastText = text;
-        lastTextChange = Date.now();
-      }
-
-      const textStableFor = Date.now() - lastTextChange;
-
-      const stopBtnExists = !!document.querySelector('[data-testid="stop-button"]');
-      const allTurns = document.querySelectorAll('.agent-turn');
-      const lastTurn = allTurns.length > 0 ? allTurns[allTurns.length - 1] : null;
-      const hasStreamingClass = lastTurn ? !!lastTurn.querySelector('.streaming-animation, .result-streaming') : false;
-
-      // 1. Haben wir die aktiven UI-Elemente schon gesehen?
-      if (stopBtnExists || hasStreamingClass) {
-        hasSeenActiveUI = true;
-      }
-
-      // 2. Primärer Exit: Wenn wir die UI gesehen haben, MUSS sie weg sein UND der Text muss ruhen.
-      if (hasSeenActiveUI) {
-        if (!stopBtnExists && !hasStreamingClass && text.length > 0) {
-          // 1.5 Sekunden Puffer, um Tool-Wechsel und Netzwerk-Flackern sicher abzufangen
-          if (textStableFor >= 1500) {
-            const ms = Date.now() - tStart;
-            B.log(`chatgpt: done (UI cleared) after ${ms}ms, ${text.length} chars`);
-            return { answer: text, durationMs: ms };
-          }
-        }
-      }
-      // 3. Fallback Exit: Falls die API extrem schnell war und wir die UI komplett verpasst haben
-      else {
-        if (text.length > 0 && textStableFor >= 4000) {
-          const ms = Date.now() - tStart;
-          B.log(`chatgpt: done (fast API fallback) after ${ms}ms, ${text.length} chars`);
-          return { answer: text, durationMs: ms };
-        }
-      }
-
-      // Safety fallback für eingefrorene Hintergrund-Tabs
-      if (text.length > 10 && textStableFor >= 60000) {
-        const ms = Date.now() - tStart;
-        B.log(`chatgpt: stable-fallback after ${ms}ms, ${text.length} chars`);
-        return { answer: text, durationMs: ms };
-      }
-    }
-
-    if (lastText.length < 10) throw new Error(`chatgpt: timeout, response too short (${lastText.length} chars)`);
     const ms = Date.now() - tStart;
-    B.log(`chatgpt: timeout after ${ms}ms, ${lastText.length} chars`);
-    return { answer: lastText, durationMs: ms };
+    B.log(`chatgpt: done after ${ms}ms, ${text.length} chars`);
+    return { answer: text, durationMs: ms };
   }
 
   window.__BENCH__.adapter = { name: "chatgpt", ask };

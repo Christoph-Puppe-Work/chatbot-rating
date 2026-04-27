@@ -38,6 +38,21 @@ ANSWER:
 Output JSON only:
 {"completeness": <int 0-10>, "precision": <int 0-10>, "reasoning": "<one or two sentence justification>"}`;
 
+const DEFAULT_QUESTION_PROMPT = `You are generating benchmark questions for testing AI chatbots on tech news comprehension.
+
+Given a news headline, produce ONE specific factual question that:
+1. A knowledgeable reader would actually want answered after seeing the headline
+2. Is self-contained — the chatbot will not see the article
+3. Asks for substantive content, not the article's existence ("what does X claim about Y?", not "is there an article about X?")
+4. Is answerable in a few paragraphs by a strong AI
+
+HEADLINE: {{HEADLINE}}
+URL: {{URL}}
+
+Output JSON with one key: question (string).`;
+
+const DEFAULT_SYSTEM_MESSAGE = ``;
+
 
 // Stable key for a (question, chatbot) pair. Same question + chatbot = same key
 // across runs, so user ratings survive re-runs and dashboard reloads.
@@ -98,6 +113,8 @@ $("claude-key").addEventListener("change", saveKeys);
 loadKeys();
 loadUserRatings();
 $('judge-prompt').value = DEFAULT_JUDGE_PROMPT;
+$('question-prompt').value = DEFAULT_QUESTION_PROMPT;
+$('system-message').value = DEFAULT_SYSTEM_MESSAGE;
 
 // ===== status pill =====
 function setStatus(text, cls) {
@@ -184,18 +201,20 @@ function renderResultRow(idx, result) {
       return;
     }
     const eff = effectiveScores(result.question, cb, a);
+    const g = a.scores?.gemini, c = a.scores?.claude;
+    const fmtJCell = (j, prefix) => {
+      if (!j || j.error) return `<span class="${prefix === 'G' ? 'gem' : 'cla'}">${prefix} ?/?</span>`;
+      return `<span class="${prefix === 'G' ? 'gem' : 'cla'}">${prefix} ${j.completeness}/${j.precision}</span>`;
+    };
     if (eff.overridden) {
-      const u = (eff.userRating.completeness + eff.userRating.precision) / 2;
+      const u = eff.userRating;
       cell.innerHTML = `
-        <span class="gem"><b>${u.toFixed(1)}</b></span><span class="user-badge">YOU</span>
+        <span class="gem"><b>${u.completeness}/${u.precision}</b></span><span class="user-badge">YOU</span>
         <span class="ms">${(a.durationMs / 1000).toFixed(1)}s · ${a.answer.length} ch</span>
       `;
     } else {
-      const gStr = eff.gemini !== null ? eff.gemini.toFixed(1) : "?";
-      const cStr = eff.claude !== null ? eff.claude.toFixed(1) : "?";
       cell.innerHTML = `
-        <span class="gem">G ${gStr}</span> ·
-        <span class="cla">C ${cStr}</span>
+        ${fmtJCell(g, 'G')} · ${fmtJCell(c, 'C')}
         <span class="ms">${(a.durationMs / 1000).toFixed(1)}s · ${a.answer.length} ch</span>
       `;
     }
@@ -259,22 +278,33 @@ function openModal(question, chatbot, ans) {
 
   $("modal-eyebrow").textContent = `// ${chatbot} answer`;
   $("modal-title").textContent = chatbot;
-  $("modal-meta").textContent = `${(ans.durationMs/1000).toFixed(1)}s · ${ans.answer.length} chars`;
+  $("modal-meta").textContent = `${(ans.durationMs / 1000).toFixed(1)}s · ${ans.answer.length} chars`;
   $("modal-q").textContent = question;
   $("modal-pre").textContent = ans.answer || "(no answer)";
 
   const g = ans.scores?.gemini, c = ans.scores?.claude;
+
+  // Compute averaged completeness and precision across both judges
+  const compScores = [g, c].filter(j => j && !j.error && typeof j.completeness === 'number').map(j => j.completeness);
+  const precScores = [g, c].filter(j => j && !j.error && typeof j.precision === 'number').map(j => j.precision);
+  const avgComp = compScores.length ? (compScores.reduce((a, b) => a + b, 0) / compScores.length).toFixed(1) : '—';
+  const avgPrec = precScores.length ? (precScores.reduce((a, b) => a + b, 0) / precScores.length).toFixed(1) : '—';
+
   const fmtJ = (j, who) => {
     if (!j) return `<b>${who}:</b> —`;
     if (j.error) return `<b>${who}:</b> error — ${j.error}`;
     return `<b>${who}:</b> completeness ${j.completeness}/10 · precision ${j.precision}/10 — ${j.reasoning || ""}`;
   };
-  $("modal-judges").innerHTML = `${fmtJ(g, "Gemini 3.1 Pro")}<br><br>${fmtJ(c, "Claude Opus 4.7")}`;
+  $("modal-judges").innerHTML = `
+    <div style="font-size:16px;margin-bottom:12px;color:var(--text-primary)">
+      <b>Avg Completeness:</b> ${avgComp}/10 &nbsp;·&nbsp; <b>Avg Precision:</b> ${avgPrec}/10
+    </div>
+    ${fmtJ(g, "Gemini 3.1 Pro")}<br><br>${fmtJ(c, "Claude Opus 4.7")}`;
 
   // populate user-rating fields
   const existing = state.userRatings[k];
   const cVal = existing?.completeness ?? avgScoreToInt(g) ?? 5;
-  const pVal = existing?.precision    ?? avgScoreToInt(c) ?? 5;
+  const pVal = existing?.precision ?? avgScoreToInt(c) ?? 5;
   $("ur-completeness").value = cVal;
   $("ur-completeness-val").textContent = cVal;
   $("ur-precision").value = pVal;
@@ -304,14 +334,14 @@ function updateRatingStatus(ur) {
 }
 
 $("ur-completeness").addEventListener("input", e => $("ur-completeness-val").textContent = e.target.value);
-$("ur-precision").addEventListener("input",    e => $("ur-precision-val").textContent    = e.target.value);
+$("ur-precision").addEventListener("input", e => $("ur-precision-val").textContent = e.target.value);
 
 $("ur-save").addEventListener("click", async () => {
   if (!state.modal) return;
   const k = state.modal.key;
   const rating = {
     completeness: parseInt($("ur-completeness").value),
-    precision:    parseInt($("ur-precision").value),
+    precision: parseInt($("ur-precision").value),
     notes: $("ur-notes").value.trim(),
     savedAt: Date.now(),
   };
@@ -363,7 +393,7 @@ function toCsv() {
     const row = [i + 1, r.question, r.article?.url || ""];
     for (const cb of CHATBOTS) {
       const a = r.answers.find(x => x.chatbot === cb);
-      if (!a) { row.push("","","","","","","","","","","",""); continue; }
+      if (!a) { row.push("", "", "", "", "", "", "", "", "", "", "", ""); continue; }
       const g = a.scores?.gemini, c = a.scores?.claude;
       const eff = effectiveScores(r.question, cb, a);
       const ur = eff.userRating;
@@ -491,19 +521,19 @@ function buildInfographicHtml(data) {
   // Per-chatbot accent shades — all violet-spectrum, distinguishable, harmonious
   // with the system accent. Built in oklch so they share lightness/chroma.
   const cbColors = {
-    claude:  "oklch(0.72 0.16 305)",   // violet — system accent
+    claude: "oklch(0.72 0.16 305)",   // violet — system accent
     chatgpt: "oklch(0.70 0.16 240)",   // complementary blue (allowed by skill)
-    gemini:  "oklch(0.74 0.14 280)",   // violet-blue midpoint
-    grok:    "oklch(0.76 0.14 330)",   // violet-pink lean
+    gemini: "oklch(0.74 0.14 280)",   // violet-blue midpoint
+    grok: "oklch(0.76 0.14 330)",   // violet-pink lean
   };
 
   // Heatmap cell colors — single-hue violet ramp by score, no rainbow.
   const scoreColor = (s) => {
     if (s === null || s === undefined) return "oklch(0.95 0.005 280 / 0.04)";
     if (s >= 8.5) return "oklch(0.72 0.18 300 / 0.85)";
-    if (s >= 7)   return "oklch(0.68 0.16 300 / 0.65)";
+    if (s >= 7) return "oklch(0.68 0.16 300 / 0.65)";
     if (s >= 5.5) return "oklch(0.60 0.13 300 / 0.45)";
-    if (s >= 4)   return "oklch(0.50 0.10 300 / 0.30)";
+    if (s >= 4) return "oklch(0.50 0.10 300 / 0.30)";
     return "oklch(0.40 0.08 300 / 0.20)";
   };
   const scoreTextColor = (s) => {
@@ -531,7 +561,7 @@ function buildInfographicHtml(data) {
             <span>${r.n} answered</span>
             ${r.errors > 0 ? `<span class="rank-meta-err">${r.errors} failed</span>` : ""}
             ${r.userN > 0 ? `<span class="rank-meta-you">${r.userN}× you</span>` : ""}
-            <span>${r.medTimeMs !== null ? (r.medTimeMs/1000).toFixed(1) + "s median" : "—"}</span>
+            <span>${r.medTimeMs !== null ? (r.medTimeMs / 1000).toFixed(1) + "s median" : "—"}</span>
             <span>${r.medLength !== null ? Math.round(r.medLength) + " chars median" : "—"}</span>
           </div>
         </div>
@@ -548,7 +578,7 @@ function buildInfographicHtml(data) {
         <div class="speed-row">
           <span class="speed-name" style="color:${cbColors[r.id]}">${r.label}</span>
           <div class="speed-track"><div class="speed-fill" style="width:${w}%; background:${cbColors[r.id]}"></div></div>
-          <span class="speed-val">${(r.medTimeMs/1000).toFixed(1)}s</span>
+          <span class="speed-val">${(r.medTimeMs / 1000).toFixed(1)}s</span>
         </div>`;
     }).join("");
 
@@ -1029,7 +1059,7 @@ $("btn-infographic").addEventListener("click", () => {
 $("btn-start").addEventListener("click", async () => {
   if (state.running) return;
   await saveKeys();
-  
+
   const fileInput = $("question-file");
   let customQuestions = null;
   if (fileInput && fileInput.files.length > 0) {
@@ -1062,6 +1092,8 @@ $("btn-start").addEventListener("click", async () => {
     autoclose: $("autoclose") ? $("autoclose").checked : true,
     customQuestions,
     judgePrompt: $('judge-prompt')?.value?.trim() || DEFAULT_JUDGE_PROMPT,
+    questionPrompt: $('question-prompt')?.value?.trim() || DEFAULT_QUESTION_PROMPT,
+    systemMessage: $('system-message')?.value?.trim() || "",
   };
   if (!config.geminiKey) { log("err", "Gemini API key missing"); return; }
   if (!config.claudeKey) { log("err", "Anthropic API key missing"); return; }
@@ -1093,7 +1125,7 @@ $("btn-start").addEventListener("click", async () => {
 
 function handleBgMessage(msg) {
   switch (msg.type) {
-    case "LOG":   log(msg.payload.level, msg.payload.msg); break;
+    case "LOG": log(msg.payload.level, msg.payload.msg); break;
     case "PHASE": updatePhase(msg.payload.phase, msg.payload.done, msg.payload.total); break;
     case "QUESTIONS_READY":
       state.questions = msg.payload.questions;
@@ -1173,34 +1205,34 @@ function openBlindModal(index) {
   if (validResults.length === 0) return;
   if (index < 0) index = 0;
   if (index >= validResults.length) index = validResults.length - 1;
-  
+
   state.blindIndex = index;
   const r = validResults[index];
-  
+
   // Create a new mapping for this question, or use an existing one if we want consistency
   // Here we re-shuffle every time we open a question to prevent guessing
   state.blindMapping = shuffleArray(CHATBOTS);
-  
+
   $("blind-q-text").textContent = `[${index + 1}/${validResults.length}] ` + r.question;
   $("blind-status-msg").textContent = "";
-  
+
   const container = $("blind-cols-container");
   container.innerHTML = "";
-  
+
   state.blindMapping.forEach((cb, ci) => {
     const a = r.answers.find(x => x.chatbot === cb);
     const k = ratingKey(r.question, cb);
     const existing = state.userRatings[k];
-    
+
     // Default to existing rating, or the judge average if we want a baseline, or just 5.
     // We'll use 5 as default to avoid biasing the human judge.
     const cVal = existing?.completeness ?? 5;
-    const pVal = existing?.precision    ?? 5;
+    const pVal = existing?.precision ?? 5;
     const notes = existing?.notes || "";
     const isSaved = !!existing?.savedAt;
-    
+
     const ansText = (a && !a.error && a.answer) ? a.answer : `(No answer generated / Error: ${a?.error || "Unknown"})`;
-    
+
     const colHtml = `
       <div class="blind-col">
         <div class="blind-col-head">Model ${String.fromCharCode(65 + ci)} ${isSaved ? '<span style="color:var(--green)">✓ saved</span>' : ''}</div>
@@ -1222,12 +1254,12 @@ function openBlindModal(index) {
     `;
     container.insertAdjacentHTML("beforeend", colHtml);
     $("b-notes-" + ci).value = notes;
-    
+
     // Live update slider values
     $("b-comp-" + ci).addEventListener("input", e => $("b-comp-val-" + ci).textContent = e.target.value);
     $("b-prec-" + ci).addEventListener("input", e => $("b-prec-val-" + ci).textContent = e.target.value);
   });
-  
+
   $("blind-modal-bg").classList.add("open");
 }
 
@@ -1242,14 +1274,14 @@ $("btn-blind-save").addEventListener("click", async () => {
   const validResults = state.results.filter(Boolean);
   if (validResults.length === 0) return;
   const r = validResults[state.blindIndex];
-  
+
   // Read and save all 4 columns
   state.blindMapping.forEach((cb, ci) => {
     const k = ratingKey(r.question, cb);
     const cVal = parseInt($("b-comp-" + ci).value);
     const pVal = parseInt($("b-prec-" + ci).value);
     const notes = $("b-notes-" + ci).value.trim();
-    
+
     state.userRatings[k] = {
       completeness: cVal,
       precision: pVal,
@@ -1257,16 +1289,16 @@ $("btn-blind-save").addEventListener("click", async () => {
       savedAt: Date.now()
     };
   });
-  
+
   await persistUserRatings();
-  
+
   // Re-render the affected row in the main table
   const origIdx = state.results.indexOf(r);
   if (origIdx >= 0) renderResultRow(origIdx, r);
-  
+
   $("blind-status-msg").textContent = "✓ Ratings saved!";
   $("blind-status-msg").style.color = "var(--green)";
-  
+
   // Auto-advance after a short delay
   setTimeout(() => {
     if (state.blindIndex < validResults.length - 1) {
