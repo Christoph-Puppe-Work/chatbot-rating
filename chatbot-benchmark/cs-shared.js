@@ -45,16 +45,28 @@
       return;
     }
     if (el.isContentEditable) {
-      // try beforeinput first (works for ProseMirror, Lexical, Quill)
-      const ev = new InputEvent("beforeinput", {
-        bubbles: true,
-        cancelable: true,
-        inputType: "insertText",
-        data: text,
-      });
+      el.focus();
+      // Select any existing content so insertText replaces rather than appends.
+      try {
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch {}
+      // Primary: execCommand('insertText') drives the editor's OWN input pipeline — the only
+      // synthetic method that reliably reaches ProseMirror/tiptap (Claude, Grok), Quill (Gemini)
+      // and Lexical (ChatGPT). A synthetic beforeinput event is IGNORED by ProseMirror, which is
+      // why composers stayed empty (the question was never sent) on the current UIs and the tabs
+      // hung until timeout. Verified live: this submits and the response streams normally.
+      let ok = false;
+      try { ok = document.execCommand("insertText", false, text); } catch {}
+      if (ok && (el.innerText || "").trim().length) return;
+      // Fallback 1: synthetic beforeinput (older editors).
+      const ev = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: text });
       const handled = !el.dispatchEvent(ev);
-      if (!handled) {
-        // fallback: textContent + input event
+      if (!handled && !(el.innerText || "").trim().length) {
+        // Fallback 2: direct textContent.
         el.textContent = text;
         el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
       }

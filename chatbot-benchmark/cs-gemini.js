@@ -12,10 +12,16 @@
       'div[contenteditable="true"][role="textbox"]',
     ],
     sendBtn: [
+      // Current Gemini (2026): an mdc-icon-button labelled by locale — "Send message" (en) /
+      // "Nachricht senden" (de) / "Prompt senden" — with a mat-icon "arrow_upward". The old
+      // .send-button class is gone. Match by aria-label (exact first, then locale-fuzzy).
+      'button[aria-label="Send message"]',
+      'button[aria-label="Nachricht senden"]',
+      'button[aria-label="Prompt senden"]',
+      'button[aria-label*="send message" i]',
+      'button[aria-label*="senden" i]',
       'button.send-button.submit',
       'button.send-button',
-      'button[mat-icon-button][aria-label*="senden"]',
-      'button[mat-icon-button][aria-label*="Send"]',
     ],
     // The single source of truth for the response text and streaming state
     markdownPanel: '.markdown.markdown-main-panel',
