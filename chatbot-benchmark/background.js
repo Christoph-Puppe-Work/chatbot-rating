@@ -343,8 +343,11 @@ async function runAskLane(runId, questions, queue, concurrency, config, total, r
       if (((await lget(kAsk(runId))) || {})[key]) continue;   // idempotent skip on resume
       if (config.msgsPerHour) await paceProduct(task.cb.id, config.msgsPerHour);
       const res = await askOne(runId, task.cb, questions[task.qi].question, config);
-      // rate-limit cue: a hit is the product wall, not an answer — cool the product and requeue
-      if (!res.error && M.isRateLimited(task.cb.id, res.answer)) {
+      // rate-limit cue: a hit is the product wall, not an answer — cool the product and requeue.
+      // Only scan SHORT answers (<=300 chars): a real rate-limit banner is a short standalone
+      // message, whereas a long news answer can legitimately contain cue words ("quota", "rate
+      // limit", "try again later") and would otherwise loop forever on cooldown+requeue.
+      if (!res.error && (res.answer || "").length <= 300 && M.isRateLimited(task.cb.id, res.answer)) {
         rlCount[key] = (rlCount[key] || 0) + 1;
         if (rlCount[key] < 3) {
           await setCooldown(task.cb.id, cooldownMin);
@@ -377,7 +380,19 @@ async function askOne(runId, cb, question, config) {
     while (Date.now() - tWait < 30000) { await sleep(1000); alive = await pingTab(tabId); if (alive) break; }
     if (!alive) throw new Error("content script never became reachable");
     await sleep(2000);
-    const resp = await chrome.tabs.sendMessage(tabId, { type: "ASK", question, maxWaitMs: config.maxWaitMs ?? 300000 });
+    // Deadline race: a background tab Chrome froze mid-ask (Win11 Energy Saver, ~15-45s after
+    // hiding unless the content script's Web Lock is held) never replies, and a bare await would
+    // wedge this worker slot FOREVER. Bound it at maxWaitMs + 60s grace.
+    const maxWaitMs = config.maxWaitMs ?? 300000;
+    let deadlineTimer = null;
+    const askP = chrome.tabs.sendMessage(tabId, { type: "ASK", question, maxWaitMs });
+    const deadlineP = new Promise((_, rej) => {
+      deadlineTimer = setTimeout(() => rej(new Error("ask reply deadline — tab frozen or content script dead")), maxWaitMs + 60000);
+    });
+    askP.catch(() => {}); deadlineP.catch(() => {});   // losing promise must not become an unhandled rejection
+    let resp;
+    try { resp = await Promise.race([askP, deadlineP]); }
+    finally { clearTimeout(deadlineTimer); }
     if (!resp?.ok) throw new Error(resp?.error || "no response");
     return { chatbot: cb.id, answer: resp.answer, durationMs: resp.durationMs ?? Math.round(performance.now() - t0), error: null };
   } catch (e) {
