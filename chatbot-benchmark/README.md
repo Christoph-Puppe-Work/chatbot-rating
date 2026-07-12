@@ -112,14 +112,26 @@ All adapters share a common stability buffer (1.5–2.5 s of stable text after t
 
 ---
 
-## Scoring
+## Scoring & Methodology (v1.1.0)
 
-Each answer is scored on two dimensions (0–10):
+Adapted from the sibling **political-compass benchmark** (`political-compass-benchmark/web-tools/chatbot-neutrality-extension`). The shared, environment-agnostic helpers live in **`cr-methods.js`** (family registry, refusal cues, bootstrap CI, rate-limit cues).
 
-- **Completeness** — Does it address all aspects of the question?
-- **Precision** — How factually accurate, specific, and well-grounded is the answer?
+**Answer status.** Every captured answer is classified *before* judging: `answered | refused | empty | error`. **Refused / empty / error answers are never sent to the paid judges** (they don't burn Gemini + Claude calls), and per-product **refusal counts are a first-class metric** rather than scored 0 or silently dropped.
 
-The dashboard table shows the average of both judges' scores per cell. Clicking any cell opens a detail modal showing the full answer, each judge's reasoning, and sliders for your own human rating. **Your rating overrides both judges** in the table and all exports.
+**Two scores per answered response** (0–10 completeness + precision, by Gemini 3.1 Pro and Claude Opus 4.7):
+
+- **Raw** — mean of both judges.
+- **Clean (headline)** — mean of only the **cross-family** judges. Gemini and Claude are *also* two of the four products, so a judge grading its own family is circular: **Gemini does not grade the Gemini product, Claude does not grade the Claude product.** For those two the clean score rests on the single cross-family judge; for ChatGPT and Grok, clean = raw. Conflicted judgements are flagged (struck through) and kept in exports — nothing is discarded.
+
+**Confidence.** The summary row shows **clean ± CI95** — a 1000-sample bootstrap over the per-question clean means, seeded `20260708 + stableOffset(product)`. Deterministic for a fixed seed, but a JS `mulberry32` PRNG, not CPython's Mersenne Twister.
+
+**Reps.** *Reps per (question × chatbot)* > 1 resamples each cell; the score is the mean over answered reps and the CI narrows. Multiplies tab + judge cost.
+
+**Human override.** Clicking a cell shows the answer + each judge's reasoning + sliders for your own rating; **your rating overrides both judges** in the table and all exports.
+
+**Pre-flight product discipline.** The measurand is the product a signed-in user experiences, so each product's config (model label, plan, **memory OFF**, web-search state, UI language) is captured in the *pre-flight* card and snapshotted into every export's manifest. Web search may legitimately stay **ON** for a news benchmark — it is *recorded*, not mandated; memory/personalization OFF is the one that matters (it prevents cross-run leakage).
+
+**Reproducibility & resilience.** All run state lives in `chrome.storage.local`; a 1-minute alarm rehydrates an interrupted run and it never re-fires a paid call on resume. A per-product **rate-limit cue scan** cools a product 15 min and requeues the task on a hit (giving up after 3). **Re-run transient** rebuilds the queue from `empty`/`error` (optionally `refused`) cells. Export the **question set** (`.txt`, re-runnable via the Custom Questions input) or the whole **run bundle** (`.json`: manifest + questions + results, **no API keys**) for later re-render / re-judge.
 
 ---
 
@@ -133,8 +145,10 @@ After a run completes, click **▶ Blind Judge** to enter a full-screen side-by-
 
 | Export | Format | Contents |
 |---|---|---|
-| **CSV** | `.csv` (UTF-8 BOM) | Per-question, per-chatbot breakdown: both judge scores, user scores, duration, character count, errors |
-| **Infographic** | Standalone `.html` | Self-contained dark-mode report with quality ranking bars, speed comparison, per-question heatmap, methodology footer. Works offline, print-friendly |
+| **CSV** | `.csv` (UTF-8 BOM) | One row per (question, rep); per‑chatbot raw + **clean** avg, `status`, `excluded_judge`, both judge scores, user scores, duration, chars, errors. Prefixed with `#`‑comment metadata rows (run id, methods version, question‑set SHA‑256, per‑product config) |
+| **Infographic** | Standalone `.html` | Dark‑mode report ranked by the **clean** score, with refusal counts, per‑question heatmap, circularity method footnote, and a reproducibility stamp |
+| **Questions** | `.txt` | One question per line — re‑runnable via the Custom Questions file input |
+| **Run bundle** | `.json` | Manifest + questions + results + your ratings (no API keys) — re‑import to re‑render, re‑judge, or re‑export |
 
 ---
 
@@ -172,7 +186,7 @@ Chrome aggressively throttles background tabs (timers, animations, DOM updates).
 
 ## Version
 
-**v0.9.24** — Current release.
+**v1.1.0** — Judge‑family circularity gate (clean cross‑family score), answer status taxonomy + refusal metric, bootstrap CI95, reps, per‑product rate‑limit cooldown, re‑run transient, pre‑flight product config, run manifest + question/bundle exports. Built on the v1.0.x MV3 checkpoint/resume engine. Methodology shared with the political‑compass benchmark via `cr-methods.js`.
 
 ## License
 

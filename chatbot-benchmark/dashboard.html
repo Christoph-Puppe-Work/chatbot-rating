@@ -464,6 +464,16 @@
       color: var(--red);
       font-style: italic;
     }
+    td.empty.refused { color: var(--amber); font-style: normal; font-weight: 600; }
+    /* pre-flight checklist rows */
+    .pf-row { display:grid; grid-template-columns:88px 1fr 130px auto 116px 60px; gap:8px; align-items:center; padding:5px 0; border-bottom:1px solid rgba(160,160,180,.10); }
+    .pf-row b { color: var(--text-secondary); font-size: 13px; }
+    #preflight-body input, #preflight-body select { background: var(--bg-input, rgba(255,255,255,.04)); color: var(--text-primary); border: 1px solid rgba(160,160,180,.18); border-radius: 6px; padding: 5px 7px; font-size: 12px; font-family: inherit; }
+    #preflight-body label { font-size: 11px; color: var(--text-quiet); display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
+    #preflight-body .pf-lang { width: 52px; }
+    /* a judge whose family matches the product — circular, excluded from the clean score */
+    .judge-conflict { color: var(--amber) !important; }
+    td.score .judge-conflict { text-decoration: line-through; text-decoration-color: var(--amber); }
 
     .summary-row td {
       font-weight: 600;
@@ -1049,6 +1059,16 @@
           <input id="max-concurrent" type="number" min="1" max="40" value="8">
           <div class="hint">Cap on parallel tabs · low = safer · high = faster</div>
         </div>
+        <div class="field">
+          <label>Reps per (question × chatbot)</label>
+          <input id="reps" type="number" min="1" max="3" value="1">
+          <div class="hint">&gt;1 gives a mean ± CI95 per product · multiplies tab & judge cost</div>
+        </div>
+        <div class="field">
+          <label>Rate cap (msgs/hour/product)</label>
+          <input id="rate-cap" type="number" min="0" max="240" value="0">
+          <div class="hint">0 = off · throttles each product · rate-limit walls auto-cool 15m</div>
+        </div>
       </div>
       <div class="row" style="margin-top: 16px;">
         <div class="field">
@@ -1072,6 +1092,17 @@
       </div>
     </section>
 
+    <!-- 02b · pre-flight (product configuration discipline) -->
+    <section class="section">
+      <div class="sec-head">
+        <span class="sec-num">02b</span>
+        <span class="sec-title">pre-flight</span>
+        <span class="sec-aside">recorded into every export · memory/personalization OFF matters most · search may stay ON for news</span>
+      </div>
+      <div id="preflight-body"></div>
+      <div class="hint" style="margin-top:8px">The measurand is the product as a signed-in user experiences it — this config is snapshotted into the run manifest so results are interpretable later.</div>
+    </section>
+
     <!-- 03 · run -->
     <section class="section">
       <div class="sec-head">
@@ -1084,8 +1115,13 @@
         <button id="btn-stop" class="btn ghost hidden">■ stop</button>
         <button id="btn-export" class="btn ghost hidden">⇣ export csv</button>
         <button id="btn-infographic" class="btn ghost hidden">⇣ export infographic</button>
+        <button id="btn-export-questions" class="btn ghost hidden">⇣ questions.txt</button>
+        <button id="btn-export-bundle" class="btn ghost hidden">⇣ run bundle</button>
+        <label id="btn-import-bundle" class="btn ghost">⇡ import bundle<input type="file" id="bundle-file" accept=".json" hidden></label>
         <button id="btn-blind-judge" class="btn ghost hidden">▶ blind judge</button>
         <button id="btn-rejudge" class="btn ghost hidden">⟳ re-judge</button>
+        <button id="btn-rerun-transient" class="btn ghost hidden">⟳ re-run transient</button>
+        <label id="rerun-refused-wrap" class="hidden" style="font-size:11px;color:var(--text-quiet);display:inline-flex;align-items:center;gap:5px"><input type="checkbox" id="rerun-include-refused"> incl. refused</label>
       </div>
 
       <div id="phases" class="phases hidden">
@@ -1217,6 +1253,7 @@
   </div>
 
 
+  <script src="cr-methods.js"></script>
   <script src="dashboard.js"></script>
 </body>
 

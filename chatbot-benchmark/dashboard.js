@@ -7,6 +7,8 @@ const state = {
   logCount: 0,
   autoscroll: true,
   port: null,
+  runMeta: null,        // reproducibility metadata from the last RESULTS
+  productConfig: {},    // per-product pre-flight snapshot (model, plan, memoryOff, search, lang)
   userRatings: {},      // key -> { completeness, precision, notes, savedAt }
   modal: null,          // { question, chatbot, ans, key } while open
   blindIndex: 0,        // current index for blind judge mode
@@ -143,6 +145,53 @@ function updatePhase(phase, done, total) {
 
 // ===== results table =====
 const CHATBOTS = ["claude", "chatgpt", "gemini", "grok"];
+const M = globalThis.CR_METHODS;   // methodology helpers (shared with the service worker)
+
+// Back-compat shim: newer records carry an explicit status; older ones are derived.
+const statusOf = a => a && (a.status || (a.error ? "error" : (!a.answer ? "empty" : "answered")));
+
+// ===== pre-flight product configuration (recorded into the run manifest) =====
+const PF_LABELS = { claude: "Claude", chatgpt: "ChatGPT", gemini: "Gemini", grok: "Grok" };
+const pfEsc = s => String(s || "").replace(/"/g, "&quot;");
+async function loadProductConfig() {
+  const v = await chrome.storage.local.get(["productConfig"]);
+  state.productConfig = v.productConfig || {};
+  renderPreflight();
+}
+async function saveProductConfig() {
+  const pc = {};
+  for (const cb of CHATBOTS) pc[cb] = {
+    modelLabel: $(`pf-${cb}-model`)?.value?.trim() || "",
+    plan: $(`pf-${cb}-plan`)?.value?.trim() || "",
+    memoryOff: $(`pf-${cb}-memoff`)?.checked || false,
+    search: $(`pf-${cb}-search`)?.value || "unknown",
+    uiLang: $(`pf-${cb}-lang`)?.value?.trim() || "en",
+    confirmedAt: state.productConfig[cb]?.confirmedAt || new Date().toISOString(),
+  };
+  state.productConfig = pc;
+  await chrome.storage.local.set({ productConfig: pc });
+}
+function renderPreflight() {
+  const body = $("preflight-body");
+  if (!body) return;
+  body.innerHTML = CHATBOTS.map(cb => {
+    const c = state.productConfig[cb] || {};
+    return `<div class="pf-row">
+      <b>${PF_LABELS[cb]}</b>
+      <input id="pf-${cb}-model" placeholder="model label (e.g. Sonnet 5)" value="${pfEsc(c.modelLabel)}">
+      <input id="pf-${cb}-plan" placeholder="plan" value="${pfEsc(c.plan)}">
+      <label><input type="checkbox" id="pf-${cb}-memoff" ${c.memoryOff ? "checked" : ""}> memory off</label>
+      <select id="pf-${cb}-search" title="web search / tools state (recorded, not required)">
+        <option value="on"${c.search === "on" ? " selected" : ""}>search on</option>
+        <option value="off"${c.search === "off" ? " selected" : ""}>search off</option>
+        <option value="unknown"${(!c.search || c.search === "unknown") ? " selected" : ""}>search ?</option>
+      </select>
+      <input id="pf-${cb}-lang" placeholder="lang" value="${pfEsc(c.uiLang || "en")}" class="pf-lang">
+    </div>`;
+  }).join("");
+  body.querySelectorAll("input,select").forEach(el => el.addEventListener("change", saveProductConfig));
+}
+loadProductConfig();
 
 function avgScore(s) {
   if (!s || s.error) return null;
@@ -150,31 +199,95 @@ function avgScore(s) {
   return ((s.completeness + s.precision) / 2);
 }
 
-// Returns the effective scores for a (question, chatbot) cell, with user rating
-// overriding judge averages when present.
-//   { display: number|null,  // single number to show in the table cell
-//     overridden: bool,      // true if user-rating was used
-//     gemini: avg|null,      // judge averages (always returned for reference)
-//     claude: avg|null,
+// Returns the effective scores for a (question, chatbot) cell.
+//   { display: raw avg over BOTH judges (or user override),
+//     clean:   avg over CROSS-FAMILY judges only (gemini product → claude judge, etc.),
+//     overridden: bool,           // user rating used
+//     gemini/claude: judge avgs,  // always returned for reference
+//     conflictedJudges: [],       // judges same-family as this product (excluded from clean)
+//     cleanJudges: [],
 //     userRating: {...}|null }
+// User override, when present, sets BOTH display and clean to the user's score.
 function effectiveScores(question, chatbot, ans) {
   const k = ratingKey(question, chatbot);
   const ur = state.userRatings[k] || null;
-  const gAvg = avgScore(ans?.scores?.gemini);
-  const cAvg = avgScore(ans?.scores?.claude);
+  const judgeAvg = { gemini: avgScore(ans?.scores?.gemini), claude: avgScore(ans?.scores?.claude) };
+  const conflictedJudges = M.conflictedJudgesFor(chatbot);
+  const cleanJudges = M.cleanJudgesFor(chatbot);
+  const meanOf = names => { const xs = names.map(j => judgeAvg[j]).filter(x => x !== null); return xs.length ? xs.reduce((s, x) => s + x, 0) / xs.length : null; };
   if (ur && typeof ur.completeness === "number" && typeof ur.precision === "number") {
-    return {
-      display: (ur.completeness + ur.precision) / 2,
-      overridden: true,
-      gemini: gAvg, claude: cAvg, userRating: ur,
-    };
+    const u = (ur.completeness + ur.precision) / 2;
+    return { display: u, clean: u, overridden: true, gemini: judgeAvg.gemini, claude: judgeAvg.claude, conflictedJudges, cleanJudges, userRating: ur };
   }
-  const both = [gAvg, cAvg].filter(x => x !== null);
   return {
-    display: both.length ? both.reduce((s, x) => s + x, 0) / both.length : null,
+    display: meanOf(["gemini", "claude"]),
+    clean: meanOf(cleanJudges),
     overridden: false,
-    gemini: gAvg, claude: cAvg, userRating: null,
+    gemini: judgeAvg.gemini, claude: judgeAvg.claude, conflictedJudges, cleanJudges, userRating: null,
   };
+}
+
+// All rep answers for a (result, chatbot). reps=1 → one entry (same as before).
+function answersFor(result, cb) { return result.answers.filter(a => a.chatbot === cb); }
+
+// Aggregate all reps of a (question, chatbot) cell into one score + status tallies.
+// A cell's score is the mean over its ANSWERED reps; non-answered reps are tallied.
+function cellAggregate(question, cb, entries) {
+  const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+  const perRep = entries.map(a => {
+    const st = statusOf(a);
+    const eff = effectiveScores(question, cb, a);   // computes a human override even for a non-answered rep
+    return { a, st, eff };
+  });
+  // a rep counts if it was answered OR the human manually rated it (rescuing a mis-flagged refusal/error)
+  const scored = perRep.filter(p => p.eff.overridden || (p.st === "answered" && (p.eff.display !== null || p.eff.clean !== null)));
+  const tally = st => perRep.filter(p => !p.eff.overridden && p.st === st).length;
+  return {
+    display: mean(scored.map(p => p.eff.display).filter(x => x !== null)),
+    clean: mean(scored.map(p => p.eff.clean).filter(x => x !== null)),
+    overridden: scored.some(p => p.eff.overridden),
+    conflictedJudges: M.conflictedJudgesFor(cb),
+    reps: entries.length, answeredReps: scored.length,
+    refused: tally("refused"), empty: tally("empty"), errors: tally("error"),
+    times: scored.map(p => p.a.durationMs),
+    lengths: scored.map(p => (p.a.answer || "").length),
+    perRep, entries,
+  };
+}
+
+// Per-chatbot aggregation feeding both the summary row and the infographic.
+// clean = cross-family score; ci95 = bootstrap over per-question clean cell means (seeded).
+function botStats() {
+  const valid = state.results.filter(Boolean);
+  const out = {};
+  for (const cb of CHATBOTS)
+    out[cb] = { raw: [], clean: [], times: [], lengths: [], refused: 0, empty: 0, errors: 0, n: 0, userN: 0,
+      conflictedJudges: M.conflictedJudgesFor(cb) };
+  for (const r of valid) {
+    for (const cb of CHATBOTS) {
+      const entries = answersFor(r, cb);
+      if (!entries.length) continue;
+      const c = cellAggregate(r.question, cb, entries);
+      out[cb].refused += c.refused; out[cb].empty += c.empty; out[cb].errors += c.errors;
+      if (c.display !== null || c.clean !== null) {
+        if (c.display !== null) out[cb].raw.push(c.display);
+        if (c.clean !== null) out[cb].clean.push(c.clean);
+        out[cb].times.push(...c.times);
+        out[cb].lengths.push(...c.lengths);
+        out[cb].n++;
+        if (c.overridden) out[cb].userN++;
+      }
+    }
+  }
+  const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+  for (const cb of CHATBOTS) {
+    const s = out[cb];
+    s.rawMean = mean(s.raw);
+    s.cleanMean = mean(s.clean);
+    const summ = s.clean.length ? M.summarizeValues(s.clean.map(v => [v, 1]), 1000, M.ciSeedFor(cb)) : null;
+    s.ci95 = summ ? summ.ci95 : null;
+  }
+  return out;
 }
 
 function renderResultRow(idx, result) {
@@ -193,18 +306,49 @@ function renderResultRow(idx, result) {
 
   CHATBOTS.forEach((cb, ci) => {
     const cell = tr.children[2 + ci];
-    const a = result.answers.find(x => x.chatbot === cb);
-    if (!a || a.error || !a.answer) {
-      cell.classList.add("empty");
-      cell.textContent = a?.error ? "✕" : "—";
-      cell.title = a?.error || "no answer";
+    const entries = answersFor(result, cb);
+    const a = entries[0];
+    // multi-rep cell: aggregated clean + reps info (per-rep detail lives in the modal)
+    if (entries.length > 1) {
+      const c = cellAggregate(result.question, cb, entries);
+      if (c.answeredReps === 0) {
+        cell.classList.add("empty");
+        cell.title = `${c.reps} reps · ${c.refused} refused / ${c.empty} empty / ${c.errors} error`;
+        if (c.refused > 0) {   // clickable → review / manually rate a flagged refusal
+          cell.classList.add("refused"); cell.textContent = "REF";
+          cell.style.cursor = "pointer"; cell.addEventListener("click", () => openModal(result.question, cb, a));
+        } else cell.textContent = c.errors > 0 ? "✕" : "—";
+        return;
+      }
+      const clean = c.clean != null ? c.clean.toFixed(2) : "—";
+      const raw = (c.display != null && c.clean != null && Math.abs(c.display - c.clean) > 0.005) ? ` raw ${c.display.toFixed(1)}` : "";
+      const you = c.overridden ? `<span class="user-badge">YOU</span>` : "";
+      const conf = c.conflictedJudges.length ? ` <span class="judge-conflict" title="clean excludes same-family judge">⊘</span>` : "";
+      const t = c.times.length ? (c.times.reduce((x, y) => x + y, 0) / c.times.length / 1000).toFixed(1) : "0.0";
+      cell.innerHTML = `<b>${clean}</b>${you}${conf}<span class="ms">${c.answeredReps}/${c.reps} reps${raw} · ${t}s</span>`;
+      cell.style.cursor = "pointer";
+      cell.addEventListener("click", () => openModal(result.question, cb, a));
       return;
     }
-    const eff = effectiveScores(result.question, cb, a);
+    const st = a ? statusOf(a) : "empty";
+    const eff = a ? effectiveScores(result.question, cb, a) : null;
+    if (!a || (st !== "answered" && !(eff && eff.overridden))) {
+      cell.classList.add("empty");
+      if (st === "refused") {   // clickable → review the flagged answer / rate it manually
+        cell.classList.add("refused"); cell.textContent = "REF";
+        cell.title = "refused — not judged · click to review / rate manually";
+        cell.style.cursor = "pointer"; cell.addEventListener("click", () => openModal(result.question, cb, a));
+      } else if (st === "error") { cell.textContent = "✕"; cell.title = a?.error || "error"; }
+      else { cell.textContent = "—"; cell.title = "no answer"; }
+      return;
+    }
     const g = a.scores?.gemini, c = a.scores?.claude;
-    const fmtJCell = (j, prefix) => {
-      if (!j || j.error) return `<span class="${prefix === 'G' ? 'gem' : 'cla'}">${prefix} ?/?</span>`;
-      return `<span class="${prefix === 'G' ? 'gem' : 'cla'}">${prefix} ${j.completeness}/${j.precision}</span>`;
+    const fmtJCell = (j, prefix, judge) => {
+      const conf = eff.conflictedJudges.includes(judge);
+      const cls = (prefix === 'G' ? 'gem' : 'cla') + (conf ? ' judge-conflict' : '');
+      const t = conf ? ' title="same-family judge — excluded from clean score"' : '';
+      const v = (!j || j.error) ? '?/?' : `${j.completeness}/${j.precision}`;
+      return `<span class="${cls}"${t}>${prefix} ${v}</span>`;
     };
     if (eff.overridden) {
       const u = eff.userRating;
@@ -213,8 +357,10 @@ function renderResultRow(idx, result) {
         <span class="ms">${(a.durationMs / 1000).toFixed(1)}s · ${a.answer.length} ch</span>
       `;
     } else {
+      const cleanTag = (eff.clean != null && eff.display != null && Math.abs(eff.clean - eff.display) > 0.005)
+        ? `<span class="ms">clean ${eff.clean.toFixed(1)}</span>` : "";
       cell.innerHTML = `
-        ${fmtJCell(g, 'G')} · ${fmtJCell(c, 'C')}
+        ${fmtJCell(g, 'G', 'gemini')} · ${fmtJCell(c, 'C', 'claude')}${cleanTag}
         <span class="ms">${(a.durationMs / 1000).toFixed(1)}s · ${a.answer.length} ch</span>
       `;
     }
@@ -240,33 +386,24 @@ function renderSummary() {
   const valid = state.results.filter(Boolean);
   if (valid.length === 0) return;
 
-  const totals = {};
-  for (const cb of CHATBOTS) totals[cb] = { score: 0, ms: 0, n: 0, errors: 0, userN: 0 };
-
-  for (const r of valid) {
-    for (const a of r.answers) {
-      const t = totals[a.chatbot]; if (!t) continue;
-      if (a.error || !a.answer) { t.errors++; continue; }
-      const eff = effectiveScores(r.question, a.chatbot, a);
-      if (eff.display === null) { t.errors++; continue; }
-      t.score += eff.display;
-      t.ms += a.durationMs;
-      t.n++;
-      if (eff.overridden) t.userN++;
-    }
-  }
-
+  const stats = botStats();
   const tr = document.createElement("tr");
   tr.className = "summary-row";
-  tr.innerHTML = `<td></td><td class="q">avg across ${valid.length} q</td>` +
+  tr.innerHTML = `<td></td><td class="q">clean ± CI95 · ${valid.length} q</td>` +
     CHATBOTS.map(cb => {
-      const t = totals[cb];
-      if (t.n === 0) return `<td class="score empty">—</td>`;
-      const avg = (t.score / t.n).toFixed(2);
-      const sec = (t.ms / t.n / 1000).toFixed(1);
-      const errs = t.errors > 0 ? ` <span class="ms" style="color:var(--red)">${t.errors} err</span>` : "";
-      const userTag = t.userN > 0 ? ` <span class="ms" style="color:var(--amber)">${t.userN}× you</span>` : "";
-      return `<td class="score"><b>${avg}</b><span class="ms">${sec}s avg${errs}${userTag}</span></td>`;
+      const s = stats[cb];
+      if (s.n === 0) return `<td class="score empty">—</td>`;
+      const clean = s.cleanMean != null ? s.cleanMean.toFixed(2) : "—";
+      const ci = s.ci95 ? ` <span class="ms">[${s.ci95[0].toFixed(1)}–${s.ci95[1].toFixed(1)}]</span>` : "";
+      const raw = (s.rawMean != null && s.cleanMean != null && Math.abs(s.rawMean - s.cleanMean) > 0.005)
+        ? ` raw ${s.rawMean.toFixed(2)}` : "";
+      const sec = s.times.length ? (s.times.reduce((a, b) => a + b, 0) / s.times.length / 1000).toFixed(1) : "0.0";
+      const ref = s.refused > 0 ? ` <span style="color:var(--amber)">${s.refused} ref</span>` : "";
+      const errs = s.errors > 0 ? ` <span style="color:var(--red)">${s.errors} err</span>` : "";
+      const userTag = s.userN > 0 ? ` <span style="color:var(--amber)">${s.userN}× you</span>` : "";
+      const conf = s.conflictedJudges.length
+        ? ` <span class="judge-conflict" title="clean score excludes same-family judge (${s.conflictedJudges.join(", ")})">⊘</span>` : "";
+      return `<td class="score"><b>${clean}</b>${ci}${conf}<span class="ms">${sec}s${raw}${ref}${errs}${userTag}</span></td>`;
     }).join("");
   tbody.appendChild(tr);
 }
@@ -278,7 +415,9 @@ function openModal(question, chatbot, ans) {
 
   $("modal-eyebrow").textContent = `// ${chatbot} answer`;
   $("modal-title").textContent = chatbot;
-  $("modal-meta").textContent = `${(ans.durationMs / 1000).toFixed(1)}s · ${ans.answer.length} chars`;
+  const stA = statusOf(ans);
+  $("modal-meta").textContent = `${(ans.durationMs / 1000).toFixed(1)}s · ${ans.answer.length} chars`
+    + (stA && stA !== "answered" ? ` · auto: ${stA} — not judged; rate below to include it` : "");
   $("modal-q").textContent = question;
   $("modal-pre").textContent = ans.answer || "(no answer)";
 
@@ -290,16 +429,19 @@ function openModal(question, chatbot, ans) {
   const avgComp = compScores.length ? (compScores.reduce((a, b) => a + b, 0) / compScores.length).toFixed(1) : '—';
   const avgPrec = precScores.length ? (precScores.reduce((a, b) => a + b, 0) / precScores.length).toFixed(1) : '—';
 
-  const fmtJ = (j, who) => {
-    if (!j) return `<b>${who}:</b> —`;
-    if (j.error) return `<b>${who}:</b> error — ${j.error}`;
-    return `<b>${who}:</b> completeness ${j.completeness}/10 · precision ${j.precision}/10 — ${j.reasoning || ""}`;
+  const conflicted = M.conflictedJudgesFor(chatbot);
+  const fmtJ = (j, who, judge) => {
+    const flag = conflicted.includes(judge)
+      ? ` <span class="judge-conflict" title="same family as ${chatbot} — excluded from the clean score">⊘ circular</span>` : "";
+    if (!j) return `<b>${who}:</b>${flag} —`;
+    if (j.error) return `<b>${who}:</b>${flag} error — ${j.error}`;
+    return `<b>${who}:</b>${flag} completeness ${j.completeness}/10 · precision ${j.precision}/10 — ${j.reasoning || ""}`;
   };
   $("modal-judges").innerHTML = `
     <div style="font-size:16px;margin-bottom:12px;color:var(--text-primary)">
       <b>Avg Completeness:</b> ${avgComp}/10 &nbsp;·&nbsp; <b>Avg Precision:</b> ${avgPrec}/10
     </div>
-    ${fmtJ(g, "Gemini 3.1 Pro")}<br><br>${fmtJ(c, "Claude Opus 4.7")}`;
+    ${fmtJ(g, "Gemini 3.1 Pro", "gemini")}<br><br>${fmtJ(c, "Claude Opus 4.7", "claude")}`;
 
   // populate user-rating fields
   const existing = state.userRatings[k];
@@ -377,23 +519,26 @@ $("modal-bg").addEventListener("click", e => {
 
 // ===== CSV export =====
 function toCsv() {
-  const head = ["#", "question", "url"];
+  const head = ["#", "rep", "question", "url"];
   for (const cb of CHATBOTS) {
     head.push(
       `${cb}_gemini_completeness`, `${cb}_gemini_precision`,
       `${cb}_claude_completeness`, `${cb}_claude_precision`,
       `${cb}_user_completeness`, `${cb}_user_precision`, `${cb}_user_notes`,
-      `${cb}_avg`, `${cb}_avg_source`,
-      `${cb}_duration_ms`, `${cb}_chars`, `${cb}_error`
+      `${cb}_avg`, `${cb}_clean_avg`, `${cb}_avg_source`, `${cb}_excluded_judge`,
+      `${cb}_status`, `${cb}_duration_ms`, `${cb}_chars`, `${cb}_error`
     );
   }
+  let maxReps = 1;
+  for (const r of state.results) if (r) for (const a of r.answers) maxReps = Math.max(maxReps, (a.rep || 0) + 1);
   const rows = [head];
   state.results.forEach((r, i) => {
     if (!r) return;
-    const row = [i + 1, r.question, r.article?.url || ""];
+    for (let rep = 0; rep < maxReps; rep++) {
+    const row = [i + 1, rep, r.question, r.article?.url || ""];
     for (const cb of CHATBOTS) {
-      const a = r.answers.find(x => x.chatbot === cb);
-      if (!a) { row.push("", "", "", "", "", "", "", "", "", "", "", ""); continue; }
+      const a = r.answers.find(x => x.chatbot === cb && (x.rep || 0) === rep);
+      if (!a) { row.push("", "", "", "", "", "", "", "", "", "", "", "", "", "", ""); continue; }
       const g = a.scores?.gemini, c = a.scores?.claude;
       const eff = effectiveScores(r.question, cb, a);
       const ur = eff.userRating;
@@ -402,13 +547,24 @@ function toCsv() {
         c?.completeness ?? "", c?.precision ?? "",
         ur?.completeness ?? "", ur?.precision ?? "", ur?.notes ?? "",
         eff.display !== null ? eff.display.toFixed(2) : "",
+        eff.clean !== null ? eff.clean.toFixed(2) : "",
         eff.overridden ? "user" : (eff.display !== null ? "judges" : ""),
+        eff.conflictedJudges.join("|"),
+        statusOf(a) || "",
         a.durationMs ?? "", a.answer?.length ?? 0, a.error || ""
       );
     }
     rows.push(row);
+    }
   });
-  return rows.map(r => r.map(csvCell).join(",")).join("\n");
+  const man = buildRunManifest();
+  const meta = [
+    `# chatbot-rating · run ${man.runId || ""} · methods ${man.methodsVersion || ""} · ext ${man.extVersion} · ${man.runDate}`,
+    `# source ${man.source || ""} · reps ${man.reps} · msgs/hour ${man.msgsPerHour} · judge_conflict ${man.judgeConflictPolicy}`,
+    `# question_set_sha256 ${man.questionSetSha256 || ""} · judges ${man.judgeModels.gemini} + ${man.judgeModels.claude}`,
+    ...CHATBOTS.map(cb => `# product_config ${cb}: ${JSON.stringify(man.productConfig?.[cb] || {})}`),
+  ];
+  return meta.join("\n") + "\n" + rows.map(r => r.map(csvCell).join(",")).join("\n");
 }
 function csvCell(v) {
   if (v == null) return "";
@@ -453,49 +609,34 @@ function buildInfographicData() {
   const valid = state.results.filter(Boolean);
   if (valid.length === 0) return null;
 
-  const perBot = {};
-  for (const cb of CHATBOTS) {
-    perBot[cb] = { scores: [], times: [], lengths: [], errors: 0, userN: 0, cells: [] };
-  }
+  const stats = botStats();
 
+  // per-question heatmap cells (clean score per (question, chatbot))
+  const cellsByBot = {};
+  for (const cb of CHATBOTS) cellsByBot[cb] = [];
   for (const r of valid) {
     for (const cb of CHATBOTS) {
-      const a = r.answers.find(x => x.chatbot === cb);
-      const t = perBot[cb];
-      if (!a || a.error || !a.answer) {
-        t.errors++;
-        t.cells.push({ score: null, error: a?.error || "no answer" });
+      const entries = answersFor(r, cb);
+      if (!entries.length) { cellsByBot[cb].push({ score: null, status: "empty", error: "no answer" }); continue; }
+      const c = cellAggregate(r.question, cb, entries);
+      if (c.answeredReps === 0) {
+        const st = c.refused ? "refused" : (c.errors ? "error" : "empty");
+        cellsByBot[cb].push({ score: null, status: st, error: st });
         continue;
       }
-      const eff = effectiveScores(r.question, cb, a);
-      if (eff.display === null) {
-        t.errors++;
-        t.cells.push({ score: null, error: "no scores" });
-        continue;
-      }
-      t.scores.push(eff.display);
-      t.times.push(a.durationMs);
-      t.lengths.push(a.answer.length);
-      if (eff.overridden) t.userN++;
-      t.cells.push({ score: eff.display, overridden: eff.overridden });
+      cellsByBot[cb].push({ score: c.clean != null ? c.clean : c.display, overridden: c.overridden, status: "answered" });
     }
   }
 
-  // build ranking
+  // ranking by CLEAN cross-family score
   const ranking = CHATBOTS.map(cb => {
-    const t = perBot[cb];
-    const avg = t.scores.length ? t.scores.reduce((s, x) => s + x, 0) / t.scores.length : null;
-    const medTime = median(t.times);
-    const medLen = median(t.lengths);
+    const s = stats[cb];
     return {
-      id: cb,
-      label: CHATBOT_LABELS[cb],
-      avg,
-      medTimeMs: medTime,
-      medLength: medLen,
-      errors: t.errors,
-      userN: t.userN,
-      n: t.scores.length,
+      id: cb, label: CHATBOT_LABELS[cb],
+      avg: s.cleanMean, rawAvg: s.rawMean, ci95: s.ci95,
+      medTimeMs: median(s.times), medLength: median(s.lengths),
+      errors: s.errors, refused: s.refused, userN: s.userN, n: s.n,
+      conflicted: s.conflictedJudges,
     };
   }).sort((a, b) => (b.avg ?? -1) - (a.avg ?? -1));
 
@@ -503,15 +644,13 @@ function buildInfographicData() {
     runDate: new Date().toISOString().slice(0, 10),
     questionCount: valid.length,
     source: "Hacker News front page",
+    manifest: buildRunManifest(),
     ranking,
-    perBot,
-    questions: valid.map(r => ({
+    perBot: cellsByBot,
+    questions: valid.map((r, idx) => ({
       question: r.question,
       url: r.article?.url || "",
-      cells: CHATBOTS.map(cb => {
-        const idx = valid.indexOf(r);
-        return perBot[cb].cells[idx];
-      }),
+      cells: CHATBOTS.map(cb => cellsByBot[cb][idx]),
     })),
   };
 }
@@ -560,6 +699,7 @@ function buildInfographicHtml(data) {
           <div class="rank-meta">
             <span>${r.n} answered</span>
             ${r.errors > 0 ? `<span class="rank-meta-err">${r.errors} failed</span>` : ""}
+            ${r.refused > 0 ? `<span class="rank-meta-err">${r.refused} refused</span>` : ""}
             ${r.userN > 0 ? `<span class="rank-meta-you">${r.userN}× you</span>` : ""}
             <span>${r.medTimeMs !== null ? (r.medTimeMs / 1000).toFixed(1) + "s median" : "—"}</span>
             <span>${r.medLength !== null ? Math.round(r.medLength) + " chars median" : "—"}</span>
@@ -990,7 +1130,7 @@ footer a { color: var(--accent); text-decoration: none; }
     <span class="section-icon">${ICONS.rank}</span>
     <span class="section-num">01 — RANKING</span>
     <span class="section-title">Quality</span>
-    <span class="section-aside">avg(completeness, precision) · 0–10</span>
+    <span class="section-aside">clean cross-family score · 0–10</span>
   </div>
   ${podium}
 </section>
@@ -1032,9 +1172,10 @@ footer a { color: var(--accent); text-decoration: none; }
 </section>
 
 <footer>
-  <p><strong>Method.</strong> Each question was generated from a Hacker News headline by Gemini 3.1 Pro, then sent through the actual consumer chat interfaces — not the API — to capture real product behaviour with system prompts, tools and web search included. Each answer was scored 0–10 on completeness and precision by two independent LLM judges (Gemini 3.1 Pro and Claude Opus 4.7); per-cell scores are the mean of both judges' average score, unless overridden by a human rating.</p>
+  <p><strong>Method.</strong> Each question was generated from a Hacker News headline by Gemini 3.1 Pro, then sent through the actual consumer chat interfaces — not the API — to capture real product behaviour (system prompts, tools, web search). Each answer was classified answered / refused / empty / error; only answered responses were scored 0–10 on completeness and precision by two independent LLM judges (Gemini 3.1 Pro, Claude Opus 4.7). The <strong>clean</strong> score shown here excludes any judge from the same model family as the product it scores — Gemini does not grade Gemini, Claude does not grade Claude — avoiding self-judging circularity; the raw two-judge average and per-product refusal counts are recorded alongside. Ranges are 95% bootstrap confidence intervals. A human rating, when present, overrides both.</p>
   <p><strong>Caveats.</strong> N=${data.questionCount} is too small for strong statistical claims; consider this a directional snapshot. Speed includes streaming time, not just first-token latency. Quality scores reflect tech-news comprehension specifically, not coding, math, or other capability dimensions.</p>
-  <div class="footer-stamp">Generated by <a href="#">Chatbot Product Benchmark v0.6.0</a> · ${new Date().toLocaleString()}</div>
+  <div class="footer-stamp">run ${data.manifest?.runId || "—"} · methods ${data.manifest?.methodsVersion || "—"} · question-set ${(data.manifest?.questionSetSha256 || "").slice(0, 12) || "—"} · reps ${data.manifest?.reps || 1} · judge policy ${data.manifest?.judgeConflictPolicy || "—"}</div>
+  <div class="footer-stamp">Generated by <a href="#">Chatbot Product Benchmark v1.1.0</a> · ${new Date().toLocaleString()}</div>
 </footer>
 
 </div>
@@ -1053,6 +1194,66 @@ $("btn-infographic").addEventListener("click", () => {
   a.href = url; a.download = `chatbot-bench-infographic-${stamp}.html`; a.click();
   URL.revokeObjectURL(url);
   log("ok", "infographic exported");
+});
+
+// ===== reproducibility: run manifest + question-set / run-bundle export & import =====
+function buildRunManifest() {
+  const m = state.runMeta || {};
+  return {
+    formatVersion: 1, tool: "chatbot-rating",
+    extVersion: m.extVersion || "1.1.0",
+    methodsVersion: (M && M.METHODS_VERSION) || m.methodsVersion || null,
+    runId: m.runId || null, runDate: new Date().toISOString(),
+    source: m.source || $("source")?.value || null,
+    questionCount: state.results.filter(Boolean).length,
+    reps: m.reps || (parseInt($("reps")?.value) || 1),
+    msgsPerHour: m.msgsPerHour || 0,
+    judgeModels: { gemini: "gemini-3.1-pro-preview", claude: "claude-opus-4-7" },
+    judgeConflictPolicy: m.judgeConflictPolicy || "cross-family-clean+raw",
+    questionSetSha256: m.questionSetSha256 || null,
+    productConfig: m.productConfig || state.productConfig || null,
+    prompts: {
+      question: $("question-prompt")?.value?.trim() || "",
+      judge: $("judge-prompt")?.value?.trim() || "",
+      system: $("system-message")?.value?.trim() || "",
+    },
+  };
+}
+function dlFile(name, text, type) {
+  const blob = new Blob([text], { type: type || "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a"); a.href = url; a.download = name; a.click();
+  URL.revokeObjectURL(url);
+}
+const runStamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+
+$("btn-export-questions").addEventListener("click", () => {
+  const qs = state.results.filter(Boolean).map(r => r.question);
+  if (!qs.length) { log("err", "no questions to export"); return; }
+  dlFile(`chatbot-bench-questions-${runStamp()}.txt`, qs.join("\n"));
+  log("ok", `exported ${qs.length} questions (re-runnable via the Custom Questions file input)`);
+});
+$("btn-export-bundle").addEventListener("click", () => {
+  const bundle = { manifest: buildRunManifest(), questions: state.questions, results: state.results, userRatings: state.userRatings };
+  dlFile(`chatbot-bench-bundle-${runStamp()}.json`, JSON.stringify(bundle, null, 2), "application/json");
+  log("ok", "exported run bundle (manifest + questions + results — no API keys)");
+});
+$("bundle-file").addEventListener("change", async (e) => {
+  const f = e.target.files?.[0]; if (!f) return;
+  try {
+    const b = JSON.parse(await f.text());
+    if (!Array.isArray(b.results)) throw new Error("not a run bundle (no results array)");
+    state.results = b.results;
+    state.runMeta = b.manifest || null;
+    state.questions = b.questions || [];
+    if (b.userRatings) state.userRatings = b.userRatings;
+    $("results-body").innerHTML = "";
+    state.results.forEach((r, i) => { if (r) renderResultRow(i, r); });
+    ["btn-export", "btn-infographic", "btn-rejudge", "btn-rerun-transient", "btn-export-questions", "btn-export-bundle", "btn-blind-judge"].forEach(id => $(id)?.classList.remove("hidden"));
+    $("rerun-refused-wrap")?.classList.remove("hidden");
+    log("ok", `imported bundle · ${state.results.filter(Boolean).length} questions · re-judge/export enabled`);
+  } catch (err) { log("err", "bundle import failed: " + err.message); }
+  e.target.value = "";
 });
 
 // ===== run / messaging =====
@@ -1089,6 +1290,9 @@ $("btn-start").addEventListener("click", async () => {
     count: parseInt($("count")?.value) || 10,
     maxWaitMs: (parseInt($("max-wait")?.value) || 300) * 1000,
     maxConcurrent: Math.max(1, Math.min(40, parseInt($("max-concurrent")?.value) || 8)),
+    reps: Math.max(1, Math.min(3, parseInt($("reps")?.value) || 1)),
+    msgsPerHour: Math.max(0, parseInt($("rate-cap")?.value) || 0),
+    productConfig: state.productConfig,
     autoclose: $("autoclose") ? $("autoclose").checked : true,
     customQuestions,
     judgePrompt: $('judge-prompt')?.value?.trim() || DEFAULT_JUDGE_PROMPT,
@@ -1136,20 +1340,33 @@ function handleBgMessage(msg) {
       renderResultRow(msg.payload.index, msg.payload.result);
       break;
     case "RESULTS":
+      if (Array.isArray(msg.payload.results)) {
+        state.results = msg.payload.results;
+        state.results.forEach((r, i) => { if (r) renderResultRow(i, r); });
+      }
+      if (msg.payload.runMeta) state.runMeta = msg.payload.runMeta;
       log("ok", "all done");
       setStatus("done", "done");
       $("btn-export").classList.remove("hidden");
       $("btn-infographic").classList.remove("hidden");
+      $("btn-export-questions").classList.remove("hidden");
+      $("btn-export-bundle").classList.remove("hidden");
       $("btn-blind-judge").classList.remove("hidden");
       $("btn-rejudge").classList.remove("hidden");
+      $("btn-rerun-transient").classList.remove("hidden");
+      $("rerun-refused-wrap").classList.remove("hidden");
       break;
     case "DONE":
       state.running = false;
       $("btn-start").disabled = false;
       $("btn-export").classList.remove("hidden");
       $("btn-infographic").classList.remove("hidden");
+      $("btn-export-questions").classList.remove("hidden");
+      $("btn-export-bundle").classList.remove("hidden");
       $("btn-blind-judge").classList.remove("hidden");
       $("btn-rejudge").classList.remove("hidden");
+      $("btn-rerun-transient").classList.remove("hidden");
+      $("rerun-refused-wrap").classList.remove("hidden");
       break;
     case "ERROR":
       log("err", msg.payload.message);
@@ -1188,6 +1405,21 @@ $("btn-rejudge").addEventListener("click", async () => {
     $("btn-rejudge").disabled = false;
   });
   port.postMessage({ type: "REJUDGE", config, results: state.results });
+});
+
+// ===== re-run transient (empty/error, optionally refused) =====
+$("btn-rerun-transient").addEventListener("click", () => {
+  if (state.running) return;
+  const includeRefused = $("rerun-include-refused")?.checked || false;
+  state.running = true;
+  $("btn-start").disabled = true;
+  setStatus("re-running transient", "running");
+  log("info", `re-running transient tasks${includeRefused ? " (incl. refused)" : ""}`);
+  const port = chrome.runtime.connect({ name: "dashboard" });
+  state.port = port;
+  port.onMessage.addListener(msg => handleBgMessage(msg));
+  port.onDisconnect.addListener(() => { state.running = false; $("btn-start").disabled = false; });
+  port.postMessage({ type: "RERUN_TRANSIENT", includeRefused });
 });
 
 // ===== blind judge mode =====

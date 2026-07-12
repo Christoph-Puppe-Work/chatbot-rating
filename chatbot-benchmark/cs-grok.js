@@ -128,7 +128,9 @@
 
       // Primary exit: Grok has the .last-response action buttons, and text is stable
       // The 2500ms buffer prevents exiting in the tiny gap before streaming begins.
-      if (text.length >= 10 && hasLastResponse && stableFor >= 2500) {
+      // >= 1 (not 10): NP-mode answers are single option digits ("3") — a length-10 gate
+      // made every 1-char answer burn the full maxWaitMs and throw "response too short".
+      if (text.length >= 1 && hasLastResponse && stableFor >= 2500) {
         const ms = Date.now() - tStart;
         B.log(`grok: last-response after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
@@ -136,14 +138,14 @@
 
       // Safety fallback: If it's still streaming but text hasn't changed in 60s
       // Background tabs freeze text updates, so this MUST be longer than a full response generation.
-      if (text.length >= 10 && !hasLastResponse && stableFor >= 60000) {
+      if (text.length >= 1 && !hasLastResponse && stableFor >= 60000) {
         const ms = Date.now() - tStart;
         B.log(`grok: stable-fallback after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
     }
 
-    if (lastText.length < 10) throw new Error(`grok: timeout, response too short (${lastText.length} chars)`);
+    if (lastText.length < 1) throw new Error(`grok: timeout, response empty`);
     const ms = Date.now() - tStart;
     B.log(`grok: timeout after ${ms}ms, ${lastText.length} chars`);
     return { answer: lastText, durationMs: ms };

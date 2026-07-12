@@ -83,13 +83,14 @@
       });
 
       // Safety timeout — in case the class never flips (network error, etc.)
+      // > 0 (not 10): NP-mode answers are single option digits ("3").
       const timer = setTimeout(() => {
         observer.disconnect();
         const fallbackText = markdownContainer.textContent.trim();
-        if (fallbackText.length > 10) {
+        if (fallbackText.length > 0) {
           resolve(fallbackText);
         } else {
-          reject(new Error(`chatgpt: timeout waiting for stream completion (${fallbackText.length} chars)`));
+          reject(new Error(`chatgpt: timeout waiting for stream completion (0 chars)`));
         }
       }, maxWaitMs);
     });

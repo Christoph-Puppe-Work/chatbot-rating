@@ -112,24 +112,28 @@
 
       const stableFor = Date.now() - lastChange;
 
-      // Primary exit: Gemini explicitly tells us it is done via the DOM, and text is stable
-      // The 2500ms buffer prevents exiting in the tiny gap before streaming begins.
-      if (text.length >= 10 && !isBusy && stableFor >= 2500) {
+      // Fast path: Gemini clears aria-busy AND text is stable. The 2500ms buffer avoids the
+      // tiny gap before streaming begins. >= 1 (not 10): NP answers are single option digits.
+      if (text.length >= 1 && !isBusy && stableFor >= 2500) {
         const ms = Date.now() - tStart;
         B.log(`gemini: aria-busy=false after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
 
-      // Safety fallback: If aria-busy gets stuck but text hasn't changed in 60s
-      // Background tabs freeze text updates, so this MUST be longer than a full response generation.
-      if (text.length >= 10 && isBusy && stableFor >= 60000) {
+      // Primary done-signal: TEXT STABILITY, independent of aria-busy. Measured live, Gemini keeps
+      // aria-busy="true" (and the stop button visible) for ~15s AFTER the answer text is fully
+      // rendered — post-gen safety/grounding. Waiting for aria-busy=false therefore idles ~15s per
+      // ask, and if trailing citations mutate the DOM the old 60s window never elapsed and the lane
+      // rode out to maxWaitMs. The content script holds a Web Lock so the tab does NOT freeze (the
+      // old comment's premise), which makes wall-clock text stability a reliable "done" marker.
+      if (text.length >= 1 && stableFor >= 6000) {
         const ms = Date.now() - tStart;
-        B.log(`gemini: stable-fallback after ${ms}ms, ${text.length} chars`);
+        B.log(`gemini: text stable ${stableFor}ms (aria-busy=${isBusy}) after ${ms}ms, ${text.length} chars`);
         return { answer: text, durationMs: ms };
       }
     }
 
-    if (lastText.length < 10) throw new Error(`gemini: timeout, response too short (${lastText.length} chars)`);
+    if (lastText.length < 1) throw new Error(`gemini: timeout, response empty`);
     const ms = Date.now() - tStart;
     B.log(`gemini: timeout after ${ms}ms, ${lastText.length} chars`);
     return { answer: lastText, durationMs: ms };
