@@ -15,6 +15,9 @@
 // Everything that talks to external APIs runs here, not in content scripts —
 // content scripts inherit page CORS, the service worker does not.
 
+import "./cr-methods.js";
+const M = globalThis.CR_METHODS;   // methodology helpers (family gate, refusal cues, stats, cues)
+
 const GEMINI_MODEL = "gemini-3.1-pro-preview";
 const CLAUDE_MODEL = "claude-opus-4-7";
 
@@ -56,6 +59,10 @@ chrome.runtime.onConnect.addListener(port => {
         send("DONE", {});
       }
     }
+    if (msg.type === "RERUN_TRANSIENT") {
+      // fire-and-forget: driveRun re-emits PARTIAL_RESULT/RESULTS/DONE as it recovers the cells
+      rerunTransient(!!msg.includeRefused).catch(e => send("ERROR", { message: String(e?.message || e) }));
+    }
   });
   port.onDisconnect.addListener(() => { dashboardPort = null; });
   // On (re)connect: resume an interrupted run, or replay a finished one, to this dashboard.
@@ -81,6 +88,32 @@ const kQ = id => "cb_q_" + id;         // during 'preparing': {origIndex: {quest
 const kAsk = id => "cb_ask_" + id;     // {"qi:chatbotId": {chatbot, answer, durationMs, error}}
 const kJudge = id => "cb_judge_" + id; // {"qi:chatbotId": {gemini, claude, errored}}
 const kTabs = id => "cb_tabs_" + id;   // {tabId: true} open ask-tabs (orphan cleanup)
+// ask/judge maps are keyed "qi:chatbotId:rep" (v2). reps defaults to 1.
+const taskKey = (qi, botId, rep) => qi + ":" + botId + ":" + rep;
+const repsOf = config => Math.max(1, Math.min(3, (config && config.reps) || 1));
+
+// ---------- per-product pacing + rate-limit cooldowns (§7.3, survive across runs) ----------
+const kCool = botId => "cb_cool_" + botId;   // until-epoch-ms
+const kPace = botId => "cb_pace_" + botId;    // [send timestamps in the last hour]
+async function getCooldowns() {
+  const got = await chrome.storage.local.get(CHATBOTS.map(c => kCool(c.id)));
+  const out = {};
+  for (const c of CHATBOTS) out[c.id] = got[kCool(c.id)] || 0;
+  return out;
+}
+async function setCooldown(botId, minutes) { await lset(kCool(botId), Date.now() + minutes * 60000); }
+// optional per-product msgs/hour cap (config.msgsPerHour; 0 = off)
+async function paceProduct(botId, cap) {
+  if (!cap) return;
+  const key = kPace(botId);
+  let pace = ((await lget(key)) || []).filter(t => t >= Date.now() - 3600000);
+  if (pace.length >= cap) {
+    const waitMs = (pace[0] + 3600000) - Date.now();
+    if (waitMs > 0) { send("LOG", { level: "info", msg: `${botId}: ${cap}/h cap reached — waiting ${Math.round(waitMs / 1000)}s` }); await sleep(waitMs); }
+  }
+  pace.push(Date.now());
+  await lset(key, pace.filter(t => t >= Date.now() - 3600000));
+}
 
 const lget = async k => (await chrome.storage.local.get(k))[k];
 const lset = (k, v) => chrome.storage.local.set({ [k]: v });
@@ -170,7 +203,7 @@ async function onConnectReattach() {
     const askMap = (await lget(kAsk(run.runId))) || {};
     const judgeMap = (await lget(kJudge(run.runId))) || {};
     send("QUESTIONS_READY", { questions: run.questions.map(q => ({ question: q.question, article: q.article })) });
-    send("RESULTS", { results: assembleResults(run.questions, askMap, judgeMap) });
+    send("RESULTS", { results: assembleResults(run.questions, askMap, judgeMap, repsOf(run.config)), runMeta: runMetaOf(run) });
     send("DONE", {});
   }
 }
@@ -194,11 +227,12 @@ async function driveRun() {
     }
 
     const questions = run.questions || [];
+    const reps = repsOf(run.config);
     send("QUESTIONS_READY", { questions: questions.map(q => ({ question: q.question, article: q.article })) });
 
     // replay any already-complete questions to a (possibly reconnected) dashboard
     const emitted = new Set();
-    for (let qi = 0; qi < questions.length; qi++) await maybeEmit(run.runId, qi, questions, emitted);
+    for (let qi = 0; qi < questions.length; qi++) await maybeEmit(run.runId, qi, questions, emitted, reps);
 
     if (run.phase === "asking") {
       await runAsking(run, questions);
@@ -261,30 +295,74 @@ async function prepareQuestions(run) {
   const finalMap = (await lget(kQ(runId))) || {};
   const questions = Object.keys(finalMap).map(Number).sort((a, b) => a - b).map(k => finalMap[k]).filter(Boolean);
   if (!questions.length) { await patchRun({ state: "error" }); throw new Error("no questions generated"); }
-  await patchRun({ questions, phase: "asking" });
+  const questionSetSha256 = await M.sha256Hex(questions.map(q => q.question).join("\n"));
+  await patchRun({ questions, phase: "asking", questionSetSha256, methodsVersion: M.METHODS_VERSION });
 }
 
 // ---------- phase: asking (fresh tab per question × chatbot) ----------
 async function runAsking(run, questions) {
   const { runId, config } = run;
-  const total = questions.length * CHATBOTS.length;
+  const reps = repsOf(config);
+  const total = questions.length * CHATBOTS.length * reps;
   const have = Object.keys((await lget(kAsk(runId))) || {}).length;
   send("PHASE", { phase: "asking", done: have, total });
-  send("LOG", { level: "info", msg: `asking ${total} tasks (${questions.length} questions × ${CHATBOTS.length} chatbots)` });
-  const concurrency = Math.max(1, Math.min(40, config.concurrency || 8));
-  const tasks = [];
+  send("LOG", { level: "info", msg: `asking ${total} tasks (${questions.length} × ${CHATBOTS.length} chatbots${reps > 1 ? " × " + reps + " reps" : ""})` });
+  const concurrency = Math.max(1, Math.min(40, config.maxConcurrent ?? config.concurrency ?? 8));
+  const queue = [];
   for (let qi = 0; qi < questions.length; qi++)
-    for (const cb of CHATBOTS) tasks.push({ qi, cb });
-  await runWithConcurrency(tasks, concurrency, async ({ qi, cb }) => {
-    if (currentRunId !== runId) return;                   // superseded by a newer run
-    const key = qi + ":" + cb.id;
-    if (((await lget(kAsk(runId))) || {})[key]) return;   // idempotent skip on resume
-    const res = await askOne(runId, cb, questions[qi].question, config);
-    const m = await serialUpdate(kAsk(runId), mm => { mm[key] = res; });
-    send("LOG", { level: res.error ? "err" : "ok", msg: `Q${qi + 1}/${cb.label}: ${res.error || res.answer.length + " chars"}` });
-    send("PHASE", { phase: "asking", done: Object.keys(m).length, total });
-  });
+    for (const cb of CHATBOTS)
+      for (let rep = 0; rep < reps; rep++) queue.push({ qi, cb, rep });
+  await runAskLane(runId, questions, queue, concurrency, config, total, reps);
   await patchRun({ phase: "judging" });
+}
+
+// Worker pool that honours per-product rate-limit cooldowns and requeues on a rate-limit cue.
+// The task pick (scan + splice) is synchronous so concurrent workers never grab the same task.
+async function runAskLane(runId, questions, queue, concurrency, config, total, reps) {
+  const rlCount = {};                                     // taskKey -> rate-limit requeue count
+  const cooldownMin = config.cooldownMin || 15;
+  const worker = async () => {
+    while (true) {
+      if (currentRunId !== runId) return;
+      const m0 = await lget(K_RUN); if (!m0 || m0.state !== "running") return;   // cancelled / superseded
+      const now = Date.now();
+      const cool = await getCooldowns();
+      let idx = -1, minUntil = Infinity;
+      for (let i = 0; i < queue.length; i++) {            // sync scan → no interleave with other workers
+        const u = cool[queue[i].cb.id] || 0;
+        if (u <= now) { idx = i; break; }
+        if (u < minUntil) minUntil = u;
+      }
+      if (idx === -1) {
+        if (!queue.length) return;                        // all done
+        await sleep(Math.min(30000, Math.max(500, minUntil - now)));  // all remaining products cooling
+        continue;
+      }
+      const task = queue.splice(idx, 1)[0];
+      const key = taskKey(task.qi, task.cb.id, task.rep);
+      if (((await lget(kAsk(runId))) || {})[key]) continue;   // idempotent skip on resume
+      if (config.msgsPerHour) await paceProduct(task.cb.id, config.msgsPerHour);
+      const res = await askOne(runId, task.cb, questions[task.qi].question, config);
+      // rate-limit cue: a hit is the product wall, not an answer — cool the product and requeue
+      if (!res.error && M.isRateLimited(task.cb.id, res.answer)) {
+        rlCount[key] = (rlCount[key] || 0) + 1;
+        if (rlCount[key] < 3) {
+          await setCooldown(task.cb.id, cooldownMin);
+          send("LOG", { level: "warn", msg: `${task.cb.label}: rate-limit cue → ${cooldownMin}m cooldown (requeued ${rlCount[key]}/3)` });
+          queue.push(task);                               // requeue to tail; do NOT record
+          continue;
+        }
+        res.error = "rate-limited (3×)"; res.answer = ""; // give up after 3 so the run terminates
+      }
+      res.rep = task.rep;
+      res.status = M.classifyAnswer(res.answer, res.error);
+      const m = await serialUpdate(kAsk(runId), mm => { mm[key] = res; });
+      send("LOG", { level: res.error ? "err" : (res.status === "answered" ? "ok" : "warn"),
+        msg: `Q${task.qi + 1}/${task.cb.label}${reps > 1 ? "#" + task.rep : ""}: ${res.error || res.status + " · " + (res.answer || "").length + " chars"}` });
+      send("PHASE", { phase: "asking", done: Object.keys(m).length, total });
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, queue.length)) }, worker));
 }
 
 // one fresh-tab ask (open → PING → settle → ASK → close), tracked for orphan cleanup
@@ -315,20 +393,25 @@ async function askOne(runId, cb, question, config) {
 // ---------- phase: judging (Gemini + Claude) ----------
 async function runJudging(run, questions, emitted) {
   const { runId, config } = run;
+  const reps = repsOf(config);
   const askMap = (await lget(kAsk(runId))) || {};
   send("LOG", { level: "info", msg: "all answers in, judging…" });
   const tasks = [];
   for (let qi = 0; qi < questions.length; qi++)
-    for (const cb of CHATBOTS) {
-      const key = qi + ":" + cb.id;
-      if (askMap[key]) tasks.push({ qi, key, ar: askMap[key], question: questions[qi].question });
-    }
+    for (const cb of CHATBOTS)
+      for (let rep = 0; rep < reps; rep++) {
+        const key = taskKey(qi, cb.id, rep);
+        if (askMap[key]) tasks.push({ qi, key, ar: askMap[key], question: questions[qi].question });
+      }
   await runWithConcurrency(tasks, 2, async ({ qi, key, ar, question }) => {
     if (currentRunId !== runId) return;                   // superseded by a newer run
-    if (((await lget(kJudge(runId))) || {})[key]) { await maybeEmit(runId, qi, questions, emitted); return; }
+    if (((await lget(kJudge(runId))) || {})[key]) { await maybeEmit(runId, qi, questions, emitted, reps); return; }
+    const status = ar.status || (ar.error ? "error" : (!ar.answer ? "empty" : "answered"));
     let scored;
-    if (ar.error || !ar.answer) {
-      scored = { gemini: null, claude: null, errored: true };
+    if (status !== "answered") {
+      // refused / empty / error — never spend a paid Gemini/Claude judge call on a non-answer
+      scored = { gemini: null, claude: null, skipped: true, errored: status === "error" };
+      send("LOG", { level: "debug", msg: `  Q${qi + 1}/${ar.chatbot}: judging skipped (${status})` });
     } else {
       const [g, c] = await Promise.all([
         withRetry(() => judgeWithGemini(question, ar.answer, config.geminiKey, config.judgePrompt), 3).catch(e => ({ error: e.message })),
@@ -339,49 +422,89 @@ async function runJudging(run, questions, emitted) {
       send("LOG", { level: "debug", msg: `  Q${qi + 1}/${ar.chatbot}: gemini=${fmtScore(g)} claude=${fmtScore(c)}` });
     }
     await serialUpdate(kJudge(runId), m => { m[key] = scored; });
-    await maybeEmit(runId, qi, questions, emitted);
+    await maybeEmit(runId, qi, questions, emitted, reps);
   });
 }
 
 // emit a question's PARTIAL_RESULT once all its answers are judged (deduped per driver via `emitted`)
-async function maybeEmit(runId, qi, questions, emitted) {
+async function maybeEmit(runId, qi, questions, emitted, reps) {
   if (emitted.has(qi)) return;
+  reps = reps || 1;
   const askMap = (await lget(kAsk(runId))) || {};
   const judgeMap = (await lget(kJudge(runId))) || {};
   const answers = [];
-  for (const cb of CHATBOTS) {
-    const key = qi + ":" + cb.id;
-    const ar = askMap[key]; if (!ar) continue;
-    const sc = judgeMap[key];
-    if (!sc) return;                                 // not fully judged yet
-    answers.push({ ...ar, scores: { gemini: sc.gemini, claude: sc.claude }, errored: sc.errored });
-  }
+  for (const cb of CHATBOTS)
+    for (let rep = 0; rep < reps; rep++) {
+      const key = taskKey(qi, cb.id, rep);
+      const ar = askMap[key]; if (!ar) continue;
+      const sc = judgeMap[key];
+      if (!sc) return;                                 // some (bot, rep) not judged yet
+      answers.push({ ...ar, scores: { gemini: sc.gemini, claude: sc.claude }, errored: sc.errored });
+    }
   if (!answers.length) return;
   emitted.add(qi);
   send("PARTIAL_RESULT", { index: qi, result: { question: questions[qi].question, article: questions[qi].article, answers } });
 }
 
-function assembleResults(questions, askMap, judgeMap) {
+function assembleResults(questions, askMap, judgeMap, reps) {
+  reps = reps || 1;
   return questions.map((q, qi) => {
     const answers = [];
-    for (const cb of CHATBOTS) {
-      const key = qi + ":" + cb.id;
-      const ar = askMap[key]; if (!ar) continue;
-      const sc = judgeMap[key] || { gemini: null, claude: null };
-      answers.push({ ...ar, scores: { gemini: sc.gemini, claude: sc.claude }, errored: sc.errored });
-    }
+    for (const cb of CHATBOTS)
+      for (let rep = 0; rep < reps; rep++) {
+        const key = taskKey(qi, cb.id, rep);
+        const ar = askMap[key]; if (!ar) continue;
+        const sc = judgeMap[key] || { gemini: null, claude: null };
+        answers.push({ ...ar, scores: { gemini: sc.gemini, claude: sc.claude }, errored: sc.errored });
+      }
     return { question: q.question, article: q.article, answers };
   });
+}
+
+// Reproducibility metadata attached to every RESULTS payload (API keys never included).
+function runMetaOf(run) {
+  return {
+    runId: run.runId, methodsVersion: run.methodsVersion || (M && M.METHODS_VERSION) || null,
+    extVersion: "1.1.0",
+    questionSetSha256: run.questionSetSha256 || null,
+    reps: repsOf(run.config), source: run.config?.source || null,
+    msgsPerHour: run.config?.msgsPerHour || 0,
+    judgeConflictPolicy: "cross-family-clean+raw",
+    productConfig: run.config?.productConfig || null,
+    started: run.started || null, finished: run.finished || new Date().toISOString(),
+  };
 }
 
 async function finishRun(run, questions) {
   const askMap = (await lget(kAsk(run.runId))) || {};
   const judgeMap = (await lget(kJudge(run.runId))) || {};
   await patchRun({ state: "done", finished: new Date().toISOString() });
-  send("RESULTS", { results: assembleResults(questions, askMap, judgeMap) });
+  const run2 = (await lget(K_RUN)) || run;
+  send("RESULTS", { results: assembleResults(questions, askMap, judgeMap, repsOf(run.config)), runMeta: runMetaOf(run2) });
   send("LOG", { level: "ok", msg: "run complete" });
   stopKeepAlive();
   send("DONE", {});
+}
+
+// Post-run recovery: re-ask + re-judge only the transient (empty/error, optionally refused) cells.
+// Idempotency then re-runs exactly the deleted cells and re-judges the missing records.
+async function rerunTransient(includeRefused) {
+  const run = await lget(K_RUN);
+  if (!run || !run.runId || !run.questions) { send("LOG", { level: "err", msg: "no completed run to re-run" }); send("DONE", {}); return; }
+  const statuses = new Set(["error", "empty"]);
+  if (includeRefused) statuses.add("refused");
+  const askMap = (await lget(kAsk(run.runId))) || {};
+  const toRedo = Object.keys(askMap).filter(k => {
+    const a = askMap[k];
+    const st = a.status || (a.error ? "error" : (!a.answer ? "empty" : "answered"));
+    return statuses.has(st);
+  });
+  if (!toRedo.length) { send("LOG", { level: "info", msg: "no transient tasks to re-run" }); send("DONE", {}); return; }
+  await serialUpdate(kAsk(run.runId), m => { for (const k of toRedo) delete m[k]; });
+  await serialUpdate(kJudge(run.runId), m => { for (const k of toRedo) delete m[k]; });
+  send("LOG", { level: "info", msg: `re-running ${toRedo.length} transient task(s)` });
+  await patchRun({ phase: "asking", state: "running" });
+  driveRun();
 }
 
 function fmtScore(s) {
