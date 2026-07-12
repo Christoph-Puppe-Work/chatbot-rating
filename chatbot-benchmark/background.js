@@ -344,14 +344,18 @@ async function runAskLane(runId, questions, queue, concurrency, config, total, r
       if (config.msgsPerHour) await paceProduct(task.cb.id, config.msgsPerHour);
       const res = await askOne(runId, task.cb, questions[task.qi].question, config);
       // rate-limit cue: a hit is the product wall, not an answer — cool the product and requeue.
-      // Only scan SHORT answers (<=300 chars): a real rate-limit banner is a short standalone
-      // message, whereas a long news answer can legitimately contain cue words ("quota", "rate
-      // limit", "try again later") and would otherwise loop forever on cooldown+requeue.
-      if (!res.error && (res.answer || "").length <= 300 && M.isRateLimited(task.cb.id, res.answer)) {
+      // Scan SHORT answers only (<=300 chars — a long news answer can legitimately contain cue
+      // words like "quota"/"try again later" and would loop forever), AND the error string:
+      // ChatGPT surfaces its wall as a modal dialog that appears instead of any answer, so the
+      // adapter throws "rate-limited: …" and we'd otherwise record a plain error with no cooldown.
+      const rlHit =
+        (!res.error && (res.answer || "").length <= 300 && M.isRateLimited(task.cb.id, res.answer)) ||
+        (!!res.error && M.isRateLimited(task.cb.id, res.error));
+      if (rlHit) {
         rlCount[key] = (rlCount[key] || 0) + 1;
         if (rlCount[key] < 3) {
           await setCooldown(task.cb.id, cooldownMin);
-          send("LOG", { level: "warn", msg: `${task.cb.label}: rate-limit cue → ${cooldownMin}m cooldown (requeued ${rlCount[key]}/3)` });
+          send("LOG", { level: "warn", msg: `${task.cb.label}: rate-limit → ${cooldownMin}m cooldown (requeued ${rlCount[key]}/3)` });
           queue.push(task);                               // requeue to tail; do NOT record
           continue;
         }

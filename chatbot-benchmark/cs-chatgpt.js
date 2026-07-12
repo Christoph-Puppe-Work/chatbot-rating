@@ -28,6 +28,20 @@
     streamingClass: 'streaming-animation',
   };
 
+  // ChatGPT surfaces its per-hour message wall as a Radix modal (role="dialog", titled
+  // "Zu viele Anfragen" / "Too many requests") that appears INSTEAD of an assistant message —
+  // so ask() would otherwise time out and be recorded as a generic error, and the product would
+  // never be cooled down or requeued. Detect the dialog and throw "rate-limited: <notice>" so the
+  // runner's cue scan (which also scans the error string) classifies it as a rate limit.
+  const RATE_LIMIT_DIALOG_RE = /zu viele anfragen|too many requests|vorübergehend eingeschränkt|temporarily (restricted|limited)|sending messages too (fast|quickly)|slow down/i;
+  function detectRateLimitDialog() {
+    for (const d of document.querySelectorAll('[role="dialog"], [data-state="open"]')) {
+      const t = (d.innerText || d.textContent || "").trim();
+      if (t && RATE_LIMIT_DIALOG_RE.test(t)) return t.replace(/\s+/g, " ").slice(0, 240);
+    }
+    return null;
+  }
+
   /**
    * Wait for the final answer using a targeted MutationObserver.
    *
@@ -119,11 +133,17 @@
       composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
     }
 
-    // Wait for the assistant message to appear in the DOM
+    // Wait for the assistant message — but bail out early if the rate-limit dialog appears instead.
     B.log("chatgpt: waiting for assistant message…");
-    const msg = await B.waitForSelector([SEL.assistantMsg], {
-      timeoutMs: Math.max(0, maxWaitMs - (Date.now() - tStart)),
-    });
+    let msg = null;
+    const msgDeadline = tStart + maxWaitMs;
+    while (Date.now() < msgDeadline) {
+      const notice = detectRateLimitDialog();
+      if (notice) throw new Error("rate-limited: " + notice);
+      msg = B.pickOne([SEL.assistantMsg]);
+      if (msg) break;
+      await B.sleep(200);
+    }
     if (!msg) throw new Error("chatgpt: no assistant message appeared");
 
     // Wait for the .markdown container to appear inside the message

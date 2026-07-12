@@ -95,7 +95,7 @@
   // (not a real answer) so the task should be requeued and the product cooled down.
   const RATE_LIMIT_CUES = {
     claude:  [/usage limit/i, /out of (free )?messages/i, /limit (erreicht|reached)/i, /resets at/i, /nutzungslimit/i],
-    chatgpt: [/you'?ve reached/i, /reached (y?our|the) (plan|usage|message) limit/i, /try again (later|after)/i, /unusual activity/i, /limit erreicht/i],
+    chatgpt: [/you'?ve reached/i, /reached (y?our|the) (plan|usage|message) limit/i, /try again (later|after)/i, /unusual activity/i, /limit erreicht/i, /rate.?limited/i, /zu viele anfragen/i, /too many requests/i, /vorübergehend eingeschränkt/i, /temporarily (restricted|limited)/i],
     gemini:  [/reached your limit/i, /quota/i, /try again later/i, /limit erreicht/i, /versuch(e|en sie) es später/i],
     grok:    [/rate limit/i, /you'?ve hit/i, /limit (reached|erreicht)/i, /higher usage limits/i],
   };
